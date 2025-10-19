@@ -74,14 +74,14 @@ python3 nanoowl_service.py \
 **Run:**
 ```bash
 cd shir
-python3 display_server.py   --root /home/user/jetson-containers/data/images/captures   --host 0.0.0.0   --port 8090   --latest-only
+python3 display_server_2.py   --root /home/user/jetson-containers/data/images/captures   --host 0.0.0.0   --port 8090   --latest-only
 ```
 
 ### 4. **comm_manager.py**
 **Run:**
 ```bash
 cd shir
-python3 comm_manager.py   --host 0.0.0.0 --port 5050   --jetson2-endpoint http://172.16.17.11:5050/prompts   --captures-root /home/user/jetson-containers/data/images/captures   --nanoowl-endpoint http://172.16.17.12:5060/infer   --forward-timeout 25   --forward-retries 7   --nanoowl-timeout 70   --nanoowl-annotate 0 --forward-json-url http://172.16.17.9:9090/ingest 
+python3 comm_manager_2.py   --host 0.0.0.0 --port 5050   --jetson2-endpoint http://172.16.17.11:5050/prompts   --captures-root /home/user/jetson-containers/data/images/captures   --nanoowl-endpoint http://172.16.17.12:5060/infer   --forward-timeout 25   --forward-retries 7   --nanoowl-timeout 70   --nanoowl-annotate 0 --forward-json-url http://172.16.17.9:9090/ingest 
 
 ```
 
