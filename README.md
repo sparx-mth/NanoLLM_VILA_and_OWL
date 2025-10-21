@@ -90,5 +90,8 @@ python3 comm_manager_2.py   --host 0.0.0.0 --port 5050   --jetson2-endpoint http
 **How to Run:**
 ```bash
 cd /home/user/jetson-containers/data/images
-python3 capture_frames.py   --source /dev/video0   --vlm http://172.16.17.12:8080/describe --interactive 
+ python3 capture_frames.py   --source /dev/video0   --vlm http://172.16.17.12:8080/describe --interactive --crop-frac 0.75 --sleep 15
+```
+```bash
+ python3 capture_frames.py --source /dev/video1 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_19___17_18_28/ --loop-sleep 65 --vlm http://172.16.17.12:8080/describe 
 ```
