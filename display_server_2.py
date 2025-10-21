@@ -379,7 +379,7 @@ INDEX_HTML = r"""
 </head>
 <body>
   <header>
-    <img src="/static/sparks.jpg" alt="Logo" class="logo" />
+    <img src="/static/sparx.jpg" alt="Logo" class="logo" />
     <h1>VLM Ingest Viewer</h1>
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
