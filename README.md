@@ -105,7 +105,8 @@ cd /home/user/jetson-containers/data/images
 
 from folder:
 ```bash
- python3 capture_frames.py --source /dev/video1 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_19___17_18_28/ --loop-sleep 65 --vlm http://172.16.17.12:8080/describe 
+ python3 capture_frames_folder.py --source /dev/video0 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_21___15_37_21/ --loop-sleep 15 --vlm http://172.16.17.12:8080/describe
+
 ```
 live from auto move:
 ```bash
