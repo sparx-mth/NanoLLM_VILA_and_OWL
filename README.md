@@ -76,6 +76,16 @@ python3 nanoowl_service.py \
 cd shir
 python3 display_server_2.py   --root /home/user/jetson-containers/data/images/captures   --host 0.0.0.0   --port 8090   --latest-only
 ```
+** if you run from local computer:
+```bash
+cd /home/user1/shir/22-10-25/
+python3 display_server.py \
+  --root $HOME/mnt/jetson_captures \
+  --host 0.0.0.0 \
+  --port 8090 \
+  --scan-interval 2.0 \
+  --latest-only
+```
 
 ### 4. **comm_manager.py**
 **Run:**
