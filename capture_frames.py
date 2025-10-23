@@ -8,6 +8,14 @@ import requests
 import sys, select, termios, tty
 from contextlib import nullcontext
 
+try:
+    import Jetson.GPIO as GPIO
+except Exception:
+    try:
+        import RPi.GPIO as GPIO
+    except Exception:
+        GPIO = None
+
 class HeadlessKeys:
     """Non-blocking single-char reader from stdin (no OpenCV window needed)."""
     def __enter__(self):
@@ -116,6 +124,19 @@ def center_crop_frac(img, frac: float):
     x0 = (W - cw) // 2
     y0 = (H - ch) // 2
     return img[y0:y0+ch, x0:x0+cw], (x0, y0, x0+cw, y0+ch)
+
+def _apply_crop_and_flip(img, crop_frac: float, flip180: bool):
+    """Center-crop then optionally rotate 180°."""
+    work = img
+    crop_box = None
+    if crop_frac < 1.0:
+        # assumes you already have center_crop_frac(img, frac) -> (cropped, (x1,y1,x2,y2))
+        work, crop_box = center_crop_frac(img, crop_frac)
+    if flip180:
+        work = cv2.rotate(work, cv2.ROTATE_180)
+    return work, crop_box
+
+
 
 def _save_jpg(path: str, bgr):
     if not cv2.imwrite(path, bgr):
@@ -305,12 +326,11 @@ def manual_interactive(args, cap: cv2.VideoCapture):
                 # center-crop if requested (this becomes the image used everywhere)
                 full_frame = frame
                 crop_box = None
-                if args.crop_frac < 1.0:
-                    try:
-                        frame, crop_box = center_crop_frac(full_frame, args.crop_frac)
-                    except Exception as e:
-                        print(f"[capture] WARN: crop failed ({e}). Using full frame.")
-                        frame, crop_box = full_frame, None
+                try:
+                    frame, crop_box = _apply_crop_and_flip(full_frame, args.crop_frac, args.flip_180)
+                except Exception as e:
+                    print(f"[capture] WARN: crop/flip failed ({e}). Using full frame.")
+                    frame, crop_box = full_frame, None
 
                 # optional save of original
                 if getattr(args, "save_full", False):
@@ -466,9 +486,9 @@ def timer_capture(args, cap: cv2.VideoCapture):
         crop_box = None
         if args.crop_frac < 1.0:
             try:
-                frame, crop_box = center_crop_frac(full_frame, args.crop_frac)
+                frame, crop_box = _apply_crop_and_flip(full_frame, args.crop_frac, args.flip_180)
             except Exception as e:
-                print(f"[capture] WARN: crop failed ({e}). Using full frame.")
+                print(f"[capture] WARN: crop/flip failed ({e}). Using full frame.")
                 frame, crop_box = full_frame, None
 
         if args.save_full:
@@ -487,6 +507,130 @@ def timer_capture(args, cap: cv2.VideoCapture):
 
         if args.vlm:
             prep_vlm(args, jpg_path, pose, json_path)
+
+def _setup_gpio(pin: int, edge: str, pull: str):
+    if GPIO is None:
+        raise RuntimeError("GPIO library not available (Jetson.GPIO / RPi.GPIO). Install or disable --gpio-pin.")
+    GPIO.setmode(GPIO.BCM)
+    pud = GPIO.PUD_UP if pull == "up" else GPIO.PUD_DOWN if pull == "down" else GPIO.PUD_OFF
+    GPIO.setup(pin, GPIO.IN, pull_up_down=pud)
+    if edge == "rising":
+        ev = GPIO.RISING
+    elif edge == "falling":
+        ev = GPIO.FALLING
+    else:
+        ev = GPIO.BOTH
+    return ev
+
+def gpio_interactive(args, cap: cv2.VideoCapture):
+    """
+    Step through poses.json. Each GPIO edge triggers the next capture.
+    Works headless (no OpenCV window needed).
+    """
+    # load ordered poses
+    if not os.path.isfile(args.poses):
+        raise ValueError(f"poses file not found: {args.poses}")
+    with open(args.poses, "r") as f:
+        poses = json.load(f)
+    if not isinstance(poses, list) or not poses:
+        raise ValueError("poses.json must be a non-empty list of {x,y,z,yaw}")
+
+    pin = int(args.gpio_pin)
+    edge = args.gpio_edge
+    pull = args.gpio_pull
+    debounce = max(0, int(args.gpio_debounce_ms))
+
+    ev = _setup_gpio(pin, edge, pull)
+    print(f"[gpio] listening on BCM {pin} edge={edge} pull={pull} debounce={debounce}ms")
+    # Use software debounce by tracking last transition time
+    last_ts_ms = 0
+    idx = 0
+    counter = 1
+    prev_value = None
+    try:
+        while True:
+            # Grab a fresh frame so we’re ready when an edge comes
+            ok, frame = False, None
+            for _ in range(args.retry):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    break
+                time.sleep(0.01)
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
+
+            value = GPIO.input(args.gpio_pin)
+            if value != prev_value:
+                if value == GPIO.HIGH:
+                    value_str = "HIGH"
+                    now_ms = int(time.time() * 1000)
+                    if now_ms - last_ts_ms < debounce:
+                        # ignore bounce
+                        continue
+                    last_ts_ms = now_ms
+
+                    if idx >= len(poses):
+                        print("[gpio] all poses captured. exiting.")
+                        break
+
+                    pose = poses[idx]
+                    idx += 1
+
+                    # ensure color
+                    if len(frame.shape) == 2:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+                    # center-crop if requested
+                    full_frame = frame
+                    try:
+                        frame, crop_box = _apply_crop_and_flip(full_frame, args.crop_frac, args.flip_180)
+                    except Exception as e:
+                        print(f"[capture] WARN: crop/flip failed ({e}). Using full frame.")
+                        frame, crop_box = full_frame, None
+
+                    # build filepaths
+                    base_stem = pose_to_name(pose)
+                    base_path = os.path.join(args.out, base_stem)
+                    jpg_path, json_path = (base_path + ".jpg", base_path + ".json")
+                    if args.suffix:
+                        jpg_path, json_path = _unique_name(base_path, True, counter)
+                        counter += 1
+
+                    # optional save of original
+                    if getattr(args, "save_full", False):
+                        try:
+                            _save_jpg(jpg_path.replace(".jpg", "_full.jpg"), full_frame)
+                        except Exception as e:
+                            print(f"[capture] WARN: save *_full.jpg failed: {e}")
+
+                    # save working image
+                    try:
+                        _save_jpg(jpg_path, frame)
+                    except Exception as e:
+                        print(f"[capture] ERROR: {e}")
+                        continue
+
+                    # sidecar (pose + image)
+                    _update_sidecar_json(json_path, pose, os.path.basename(jpg_path), vlm_text=None)
+
+                    # optional VLM call (unchanged)
+                    if args.vlm:
+                        prep_vlm(args, jpg_path, pose, json_path)
+
+                    print(f"[capture] GPIO-triggered save → {jpg_path}  ({idx}/{len(poses)})")
+                else:
+                    value_str = "LOW"
+                prev_value = value
+
+            # light idle
+            time.sleep(0.2)
+
+    finally:
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
 
 def _unique_name(base_path: str, enable_suffix: bool, counter: int) -> Tuple[str, str]:
     """
@@ -523,6 +667,8 @@ def main():
                     help="Center-crop fraction for captured image (1.0=no crop).")
     ap.add_argument("--save-full", action="store_true",
                     help="Also save the full uncropped frame as *_full.jpg for debugging.")
+    ap.add_argument("--flip-180", action="store_true",
+                    help="Rotate the (cropped) image by 180° before saving.")
 
     # Read from directory options
     ap.add_argument("--frames-dir", default="", help="If set, operate on images from this folder instead of camera")
@@ -537,6 +683,16 @@ def main():
     ap.add_argument("--preview", action="store_true", help="Show OpenCV preview window (required for keypress).")
     ap.add_argument("--manual-pose", default="", help="Pose used in interactive mode as 'x,y,z,yaw' (default 0,0,1.5,0).")
     ap.add_argument("--suffix", action="store_true", help="Append _0001, _0002… to interactive captures to avoid overwrite.")
+
+    # GPIO trigger options
+    ap.add_argument("--gpio-pin", type=int, default=18,
+                    help="BCM pin number to trigger capture on edge (enables GPIO mode).")
+    ap.add_argument("--gpio-edge", choices=["rising","falling","both"], default="rising",
+                    help="Which edge to trigger on (default: rising).")
+    ap.add_argument("--gpio-pull", choices=["up","down","off"], default="up",
+                    help="Internal pull resistor (up/down/off).")
+    ap.add_argument("--gpio-debounce-ms", type=int, default=50,
+                    help="Debounce window in milliseconds.")
 
     # VLM options
     ap.add_argument("--vlm", default="", help="VLM describe endpoint, e.g. http://172.16.17.12:8080/describe (empty to disable)")
@@ -558,17 +714,19 @@ def main():
         cap.read()
 
     # --- interactive mode: capture-by-key, pose advances from poses.json ---
-    if args.interactive:
-
+    # --- mode dispatch ---
+    if args.gpio_pin is not None:
+        gpio_interactive(args, cap=cap)
+    elif args.interactive:
         if args.frames_dir:
-            interactive_from_folder(args)
+            interactive_from_folder(args)  # keyboard + folder
         else:
-            manual_interactive(args, cap=cap)
+            manual_interactive(args, cap=cap)  # keyboard + camera
     else:
         if args.frames_dir:
-            loop_over_folder(args)  # non-interactive loop over folder
+            loop_over_folder(args)  # timed loop over folder
         else:
-           timer_capture(args, cap=cap)
+            timer_capture(args, cap=cap)  # timed poses from camera
 
     cap.release()
     print("[capture] done.")

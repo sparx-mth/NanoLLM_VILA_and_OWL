@@ -14,7 +14,7 @@
        │ Generates textual description for each image
        ▼
 🌈 display_server.py (Web GUI Viewer)
-Displays live image grid from /home/user/jetson-containers/data/images/captures/
+Displays live image grid from /mnt/VLM/jetson-data/images/captures/
        └── http://<DEVICE_IP>:8090  ← Live dashboard for images + captions
        │
        │ Sends captions to
@@ -31,6 +31,7 @@ Displays live image grid from /home/user/jetson-containers/data/images/captures/
        │
        └── Saves <basename>_ann.jpg next to each original image
              (with BBOX and labels)
+
 ```
 
 This creates a **real-time, closed-loop multimodal system** connecting:
@@ -49,7 +50,11 @@ ssh -X user@172.16.17.12
 ### 1. **VILA API Server**
 **Run inside the VILA container:**
 ```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/mnt/VLM/jetson-data   nano_llm_custom /bin/bash
+jetson-containers run -it \
+  --publish 8080:8080 \
+  --volume /mnt/VLM/jetson-data:/home/user/jetson-containers/data \
+  --volume /mnt/VLM:/mnt/VLM \
+  nano_llm_custom /bin/bash
 ```
 
 Then start the API server:
@@ -73,25 +78,57 @@ python3 nanoowl_service.py \
 
 **Run:**
 ```bash
-cd shir
-python3 display_server_2.py   --root /home/user/jetson-containers/data/images/captures   --host 0.0.0.0   --port 8090   --latest-only
+cd ~/shir
+python3 display_server_2.py \
+  --root /mnt/VLM/jetson-data/images/captures \
+  --host 0.0.0.0 \
+  --port 8090 \
+  --latest-only
+```
+
+** if you run from local computer:
+```bash
+cd /home/user1/shir/22-10-25/
+python3 display_server.py \
+  --root $HOME/mnt/jetson_captures \
+  --host 0.0.0.0 \
+  --port 8090 \
+  --scan-interval 2.0 \
+  --latest-only
 ```
 
 ### 4. **comm_manager.py**
 **Run:**
 ```bash
-cd shir
-python3 comm_manager_2.py   --host 0.0.0.0 --port 5050   --jetson2-endpoint http://172.16.17.11:5050/prompts   --captures-root /home/user/jetson-containers/data/images/captures   --nanoowl-endpoint http://172.16.17.12:5060/infer   --forward-timeout 25   --forward-retries 7   --nanoowl-timeout 70   --nanoowl-annotate 0 --forward-json-url http://172.16.17.9:9090/ingest 
-
+cd ~/shir
+python3 comm_manager_2.py \
+  --host 0.0.0.0 \
+  --port 5050 \
+  --jetson2-endpoint http://172.16.17.11:5050/prompts \
+  --captures-root /mnt/VLM/jetson-data/images/captures \
+  --nanoowl-endpoint http://172.16.17.12:5060/infer \
+  --forward-timeout 25 \
+  --forward-retries 7 \
+  --nanoowl-timeout 70 \
+  --nanoowl-annotate 0 \
+  --forward-json-url http://172.16.17.9:9090/ingest
 ```
 
 
 ### 5. `capture_frames.py`
 **How to Run:**
 ```bash
-cd /home/user/jetson-containers/data/images
+cd /mnt/VLM/jetson-data/images
  python3 capture_frames.py   --source /dev/video0   --vlm http://172.16.17.12:8080/describe --interactive --crop-frac 0.75 --sleep 15
 ```
+
+from folder:
 ```bash
- python3 capture_frames.py --source /dev/video1 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_19___17_18_28/ --loop-sleep 65 --vlm http://172.16.17.12:8080/describe 
+ python3 capture_frames_folder.py --source /dev/video0 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_21___15_37_21/ --loop-sleep 15 --vlm http://172.16.17.12:8080/describe
+
 ```
+live from auto move:
+```bash
+python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.8   --vlm http://172.16.17.12:8080/describe --flip-180
+```
+
