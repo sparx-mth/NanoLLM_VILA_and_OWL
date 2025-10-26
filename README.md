@@ -35,6 +35,16 @@ Displays live image grid from /mnt/VLM/jetson-data/images/captures/
        │
        └── Saves <basename>_ann.jpg next to each original image
              (with BBOX and labels)
+       │
+       ▼
+🗺️ Jetson #3 – LLM Room Mapper (172.16.17.15)
+       │
+       │ Receives detected objects + environment context
+       │ Provides reasoning & navigation queries to objects
+       ▼
+🧭 run_llm_with_web.py
+       └── Web interface: http://172.16.17.15:8080/
+             → Live updated room map with LLM-driven navigation queries
 
 ```
 
@@ -118,7 +128,7 @@ python3 comm_manager_2.py \
   --forward-json-url http://172.16.17.4:9090/ingest
 ```
 
-### 6. `LM Object List Extractor`
+### 6. `LLM Object List Extractor`
 **How to Run:**
 ```bash
 ssh user@172.16.17.11
@@ -151,3 +161,23 @@ live from auto move:
 python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.8   --vlm http://172.16.17.12:8080/describe --flip-180
 ```
 
+### 8. '6. Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)'
+Connect to Jetson #3:
+```bash
+ssh nvidia@172.16.17.15
+```
+Terminal 1 – Start Ollama Server
+```bash
+ollama serve
+```
+
+Terminal 2 – Launch Room Mapping Web Interface
+```bash
+cd /GIT/TheAgency/src/room_mapping
+python3 run_llm_with_web.py
+```
+
+Then open in your browser:
+```bash
+http://172.16.17.15:8080/
+```
