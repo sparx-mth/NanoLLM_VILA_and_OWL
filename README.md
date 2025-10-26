@@ -21,7 +21,11 @@ Displays live image grid from /mnt/VLM/jetson-data/images/captures/
        ▼
 🖥️ comm_manager.py 
        │
-       │ Forwards description to LLM on Jetson #2 → extracts object list
+       │ Forwards description to LLM on Jetson #2 
+       ▼
+🧠 LLM Prompt Converter (Jetson #2 – 172.16.17.11:5050 /prompts)
+       │
+       │ Converts free-text caption → clean object list (for OWL-ViT)
        ▼
 🤖 NanoOWL (Object Detection Engine)
        │
@@ -111,11 +115,26 @@ python3 comm_manager_2.py \
   --forward-retries 7 \
   --nanoowl-timeout 70 \
   --nanoowl-annotate 0 \
-  --forward-json-url http://172.16.17.9:9090/ingest
+  --forward-json-url http://172.16.17.4:9090/ingest
 ```
 
+### 6. `LM Object List Extractor`
+**How to Run:**
+```bash
+ssh user@172.16.17.11
+```
+in terminal 1:
+```bash
+ollama serve
+```
 
-### 5. `capture_frames.py`
+in terminal 2:
+```bash
+cd /mnt/nvme/GIT/OWL-ViT_test
+gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
+```
+
+### 7. `capture_frames.py`
 **How to Run:**
 ```bash
 cd /mnt/VLM/jetson-data/images
