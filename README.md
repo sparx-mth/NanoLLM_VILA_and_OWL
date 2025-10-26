@@ -90,7 +90,7 @@ sudo docker run -it --network host nanoowl_new:v1.4 /bin/bash
 cd examples/jetson_server/
 python3 nanoowl_service.py \
   --engine /opt/nanoowl/data/owl_image_encoder_patch32.engine \
-  --host 0.0.0.0 --port 5060
+  --host 0.0.0.0 --port 5060 --min-score 0.2
 ```
 
 ### 3. **Display Server (Web GUI Viewer)**
