@@ -76,6 +76,11 @@ Then start the API server:
 python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://172.16.17.12:5050/from_vila
 ```
 ### 2. **NanoOWL Object Detector**
+first- get in to the jetson:
+
+```
+ssh -X user@172.16.17.12
+```
 
 ```bash
 sudo docker run -it --network host nanoowl_new:v1.4 /bin/bash
@@ -90,6 +95,11 @@ python3 nanoowl_service.py \
 
 ### 3. **Display Server (Web GUI Viewer)**
 
+first- get in to the jetson:
+
+```
+ssh -X user@172.16.17.12
+```
 **Run:**
 ```bash
 cd ~/shir
@@ -100,18 +110,14 @@ python3 display_server_2.py \
   --latest-only
 ```
 
-** if you run from local computer:
-```bash
-cd /home/user1/shir/22-10-25/
-python3 display_server.py \
-  --root $HOME/mnt/jetson_captures \
-  --host 0.0.0.0 \
-  --port 8090 \
-  --scan-interval 2.0 \
-  --latest-only
-```
 
 ### 4. **comm_manager.py**
+
+first- get in to the jetson:
+
+```
+ssh -X user@172.16.17.12
+```
 **Run:**
 ```bash
 cd ~/shir
@@ -125,26 +131,15 @@ python3 comm_manager_2.py \
   --forward-retries 7 \
   --nanoowl-timeout 70 \
   --nanoowl-annotate 0 \
-  --forward-json-url http://172.16.17.4:9090/ingest
+  --forward-json-url http://172.16.17.15:9090/ingest
 ```
 
-### 6. `LLM Object List Extractor`
-**How to Run:**
-```bash
-ssh user@172.16.17.11
-```
-in terminal 1:
-```bash
-ollama serve
-```
+### 6. **capture_frames.py**
+first- get in to the jetson:
 
-in terminal 2:
-```bash
-cd /mnt/nvme/GIT/OWL-ViT_test
-gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
 ```
-
-### 7. `capture_frames.py`
+ssh -X user@172.16.17.12
+```
 **How to Run:**
 ```bash
 cd /mnt/VLM/jetson-data/images
@@ -161,7 +156,25 @@ live from auto move:
 python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.8   --vlm http://172.16.17.12:8080/describe --flip-180
 ```
 
-### 8. '6. Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)'
+### 7. **LLM Object List Extractor**
+
+Connect to Jetson #2:
+```bash
+ssh user@172.16.17.11
+```
+in terminal 1:
+```bash
+ollama serve
+```
+
+in terminal 2:
+```bash
+cd /mnt/nvme/GIT/OWL-ViT_test
+gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
+```
+
+
+### 8. ** Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
 ssh nvidia@172.16.17.15
