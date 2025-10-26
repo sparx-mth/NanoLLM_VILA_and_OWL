@@ -153,7 +153,7 @@ from folder:
 ```
 live from auto move:
 ```bash
-python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.8   --vlm http://172.16.17.12:8080/describe --flip-180
+python3 capture_frames_26_10.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.7   --vlm http://172.16.17.12:8080/describe --flip-180
 ```
 
 ### 7. **LLM Object List Extractor**
@@ -184,7 +184,11 @@ Terminal 1 – Start Ollama Server
 ollama serve
 ```
 
-Terminal 2 – Launch Room Mapping Web Interface
+Terminal 2 – Launch Room Mapping Wejetson-containers run -it \
+  --publish 8080:8080 \
+  --volume /mnt/VLM/jetson-data:/home/user/jetson-containers/data \
+  --volume /mnt/VLM:/mnt/VLM \
+  nano_llm_custom /bin/bashb Interface
 ```bash
 cd /GIT/TheAgency/src/room_mapping
 python3 run_llm_with_web.py
