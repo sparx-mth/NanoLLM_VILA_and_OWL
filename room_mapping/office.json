@@ -1,0 +1,83 @@
+{
+  "house_dimensions_m": {
+    "width": 5.882352941176471,
+    "height": 5.882352941176471
+  },
+  "grid_resolution": 0.1667,
+  "rooms": {
+    "Inbal's Office": {
+      "name": "Inbal's Office",
+      "bbox": [
+        0,
+        0,
+        18,
+        10
+      ],
+      "objects": [
+
+      ],
+      "doors": [16, 6]
+    },
+    "Yaniv Oren's Office": {
+      "name": "Yaniv Oren's Office",
+      "bbox": [
+        0,
+        10,
+        18,
+        23
+      ],
+      "objects": [
+
+      ],
+      "doors": [16, 14]
+    },
+    "Moshe's Office": {
+      "name": "Moshe's Office",
+      "bbox": [
+        0,
+        23,
+        18,
+        34
+      ],
+      "objects": [
+
+      ],
+      "doors": [16, 30]
+    },
+    "Open Space": {
+      "name": "Open Space",
+      "bbox": [
+        23,
+        24,
+        40,
+        40
+      ],
+      "objects": [
+
+      ],
+      "doors": []
+    },
+    "hallway": {
+      "name": "hallway",
+      "bbox": [
+        18,
+        0,
+        24,
+        24
+      ],
+      "objects": [],
+      "doors": []
+    }
+  },
+  "tile_registry": {
+    "free_space": 0,
+    "wall": 1,
+    "camera": 2,
+    "door": 3,
+    "table": 4,
+    "chair": 5,
+    "table and monitor": 6,
+    "tv": 7,
+    "entry point": 8
+  }
+}
