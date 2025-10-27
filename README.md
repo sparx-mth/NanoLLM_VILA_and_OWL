@@ -1,67 +1,11 @@
-# **System Overview – VILA + Jetson LLM + NanoOWL Integrated Pipeline**
-
-```
-📷 Camera / Stream (/dev/video0)
-       │
-       ▼
-🧩 capture_frames.py → /opt/missions/poses.json
-       │
-       │ Sends image_path requests to
-       ▼
-🧠 VILA API Server (main_with_time_and_json_and_image_http.py)
-(run from: /opt/NanoLLM/nano_llm/chat/__main__.py)
-       │
-       │ Generates textual description for each image
-       ▼
-🌈 display_server.py (Web GUI Viewer)
-Displays live image grid from /mnt/VLM/jetson-data/images/captures/
-       └── http://<DEVICE_IP>:8090  ← Live dashboard for images + captions
-       │
-       │ Sends captions to
-       ▼
-🖥️ comm_manager.py 
-       │
-       │ Forwards description to LLM on Jetson #2 
-       ▼
-🧠 LLM Prompt Converter (Jetson #2 – 172.16.17.11:5050 /prompts)
-       │
-       │ Converts free-text caption → clean object list (for OWL-ViT)
-       ▼
-🤖 NanoOWL (Object Detection Engine)
-       │
-       │ Receives the image + object list → returns bounding boxes
-       ▼
-🎨 Automatic OpenCV Annotator
-       │
-       └── Saves <basename>_ann.jpg next to each original image
-             (with BBOX and labels)
-       │
-       ▼
-🗺️ Jetson #3 – LLM Room Mapper (172.16.17.15)
-       │
-       │ Receives detected objects + environment context
-       │ Provides reasoning & navigation queries to objects
-       ▼
-🧭 run_llm_with_web.py
-       └── Web interface: http://172.16.17.15:8080/
-             → Live updated room map with LLM-driven navigation queries
-
-```
-
-This creates a **real-time, closed-loop multimodal system** connecting:
-**camera capture → vision-language description → object extraction → bounding-box detection → annotated visualization**.
-
-
-
-
 
 ## 🔹 **Pipeline Stages**
-first- get in to the jetson:
 
+### 1. **VILA API Server**
+first- get in to the jetson:
 ```
 ssh -X user@172.16.17.12
 ```
-### 1. **VILA API Server**
 **Run inside the VILA container:**
 ```bash
 jetson-containers run -it \
@@ -77,7 +21,6 @@ python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b 
 ```
 ### 2. **NanoOWL Object Detector**
 first- get in to the jetson:
-
 ```
 ssh -X user@172.16.17.12
 ```
@@ -197,4 +140,55 @@ python3 run_llm_with_web.py
 Then open in your browser:
 ```bash
 http://172.16.17.15:8080/
+```
+
+
+# **System Overview – VILA + Jetson LLM + NanoOWL Integrated Pipeline**
+
+```
+📷 Camera / Stream (/dev/video0)
+       │
+       ▼
+🧩 capture_frames.py → /opt/missions/poses.json
+       │
+       │ Sends image_path requests to
+       ▼
+🧠 VILA API Server (main_with_time_and_json_and_image_http.py)
+(run from: /opt/NanoLLM/nano_llm/chat/__main__.py)
+       │
+       │ Generates textual description for each image
+       ▼
+🌈 display_server.py (Web GUI Viewer)
+Displays live image grid from /mnt/VLM/jetson-data/images/captures/
+       └── http://<DEVICE_IP>:8090  ← Live dashboard for images + captions
+       │
+       │ Sends captions to
+       ▼
+🖥️ comm_manager.py 
+       │
+       │ Forwards description to LLM on Jetson #2 
+       ▼
+🧠 LLM Prompt Converter (Jetson #2 – 172.16.17.11:5050 /prompts)
+       │
+       │ Converts free-text caption → clean object list (for OWL-ViT)
+       ▼
+🤖 NanoOWL (Object Detection Engine)
+       │
+       │ Receives the image + object list → returns bounding boxes
+       ▼
+🎨 Automatic OpenCV Annotator
+       │
+       └── Saves <basename>_ann.jpg next to each original image
+             (with BBOX and labels)
+       │
+       ▼
+🗺️ Jetson #3 – LLM Room Mapper (172.16.17.15)
+       │
+       │ Receives detected objects + environment context
+       │ Provides reasoning & navigation queries to objects
+       ▼
+🧭 run_llm_with_web.py
+       └── Web interface: http://172.16.17.15:8080/
+             → Live updated room map with LLM-driven navigation queries
+
 ```
