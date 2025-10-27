@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# capture_frames.py
+# capture_frames_old.py
 import datetime
 import os,  argparse, cv2
 
