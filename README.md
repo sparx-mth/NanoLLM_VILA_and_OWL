@@ -113,6 +113,7 @@ ollama serve
 in terminal 2:
 ```bash
 cd /mnt/nvme/GIT/OWL-ViT_test
+source .venv/bin/activate
 gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
 ```
 
