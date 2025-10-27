@@ -113,7 +113,6 @@ ollama serve
 in terminal 2:
 ```bash
 cd /mnt/nvme/GIT/OWL-ViT_test
-source .venv/bin/activate
 gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
 ```
 
@@ -128,13 +127,17 @@ Terminal 1 – Start Ollama Server
 ollama serve
 ```
 
-Terminal 2 – Launch Room Mapping Wejetson-containers run -it \
-  --publish 8080:8080 \
-  --volume /mnt/VLM/jetson-data:/home/user/jetson-containers/data \
-  --volume /mnt/VLM:/mnt/VLM \
-  nano_llm_custom /bin/bashb Interface
+ * if ollama not install - run : 
 ```bash
-cd /GIT/TheAgency/src/room_mapping
+ollama run llama3.1:8b
+ollama run llama3.2:3b 
+```
+
+Terminal 2 – Launch Room Mapping
+```bash
+cd ~/GIT/TheAgency/src/room_mapping
+source .venv/bin/activate
+pip3 install requirements.txt
 python3 run_llm_with_web.py
 ```
 
