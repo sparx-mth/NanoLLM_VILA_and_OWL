@@ -127,12 +127,6 @@ def _find_latest_image_and_json(root_dir: str):
 
 
 def _update_sidecar_json(json_path: str, updater: dict):
-    """
-    Safe write/update to sidecar JSON:
-      - read existing dict or start a new one
-      - merge 'updater' keys
-      - write atomically via *.tmp then replace
-    """
     obj = {}
     if os.path.isfile(json_path):
         try:
@@ -141,7 +135,9 @@ def _update_sidecar_json(json_path: str, updater: dict):
         except Exception:
             obj = {}
 
-    # Merge/update top-level keys in-place
+    if not isinstance(obj, dict):
+        obj = {}
+
     for k, v in updater.items():
         obj[k] = v
 
@@ -149,6 +145,7 @@ def _update_sidecar_json(json_path: str, updater: dict):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
     os.replace(tmp, json_path)
+
 
 
 def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
