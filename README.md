@@ -60,9 +60,9 @@ ssh -X user@172.16.17.12
 ```
 **Run:**
 ```bash
-cd ~/shir
+cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server_2.py \
-  --root /mnt/VLM/jetson-data/images/captures \
+  --root /tmp/incoming_frames/ \
   --host 0.0.0.0 \
   --port 8090 \
   --latest-only
@@ -78,19 +78,19 @@ ssh -X user@172.16.17.12
 ```
 **Run:**
 ```bash
-cd ~/shir
+cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 comm_manager_2.py \
   --host 0.0.0.0 \
   --port 5050 \
-  --jetson2-endpoint http://172.16.17.11:5050/prompts \
-  --captures-root /mnt/VLM/jetson-data/images/captures \
+  --jetson2-endpoint http://172.16.17.10:5050/prompts \
+  --captures-root /tmp/incoming_frames/ \
   --nanoowl-endpoint http://172.16.17.12:5060/infer \
   --forward-timeout 25 \
   --forward-retries 7 \
   --nanoowl-timeout 70 \
   --nanoowl-annotate 0 \
   --forward-json-url http://172.16.17.15:9090/ingest
-```
+ ```
 
 ## 5. **capture_frames.py**
 first- get in to the jetson:
@@ -100,16 +100,21 @@ ssh -X user@172.16.17.12
 ```
 **How to Run:**
 ```bash
-cd /mnt/VLM/jetson-data/images
- python3 capture_frames.py   --source /dev/video0   --vlm http://172.16.17.12:8080/describe --interactive --crop-frac 0.75 --sleep 15
+cd ~/GIT/raspi/
+ python3 receiver_vlm.py --host 0.0.0.0 --port 5001
 ```
 
+call for capture from raspberry Pi 
+```bash
+cd ~/GIT/raspi/
+./discover_and_capture.py --name test --count 8 --interval 15
+```
 from folder:
 ```bash
- python3 capture_frames_folder.py --source /dev/video0 --frames-dir /home/user/jetson-containers/data/images/captures/2025_10_21___15_37_21/ --loop-sleep 15 --vlm http://172.16.17.12:8080/describe
+ python3 capture_frames_folder.py --source /dev/video0 --frames-dir /tmp/incoming_frames/2025_10_21___15_37_21/ --loop-sleep 15 --vlm http://172.16.17.12:8080/describe
 
 ```
-live from auto move:
+live from auto move: NOT RELEVANT FROM RASPI
 ```bash
 python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.7   --vlm http://172.16.17.12:8080/describe --flip-180 --gpio-pin 12 --gpio-first-frame 16
 ```
