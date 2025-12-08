@@ -8,7 +8,7 @@ ssh -X user@172.16.17.12
 ```
 **Run inside the VILA container:**
 ```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/Pictures/R2:/home/user/Pictures/R2  nano_llm_custom /bin/bash
+jetson-containers run -it   --publish 8080:8080   --volume /home/user/Pictures/R2:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
 
 ```
 
@@ -27,7 +27,7 @@ ssh -X user@172.16.17.12
 ```
 
 ```bash
-docker run -it --name now_eng \
+docker run -it --rm --name now_eng \
   --runtime nvidia \
   --network host --ipc=host \
   -e NVIDIA_VISIBLE_DEVICES=all \
@@ -82,14 +82,14 @@ cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 comm_manager_2.py \
   --host 0.0.0.0 \
   --port 5050 \
-  --jetson2-endpoint http://172.16.17.10:5050/prompts \
+  --jetson2-endpoint http://192.168.131.21:5050/prompts \
   --captures-root /tmp/incoming_frames/ \
-  --nanoowl-endpoint http://172.16.17.12:5060/infer \
+  --nanoowl-endpoint http://192.168.131.22:5060/infer \
   --forward-timeout 25 \
   --forward-retries 7 \
   --nanoowl-timeout 70 \
   --nanoowl-annotate 0 \
-  --forward-json-url http://172.16.17.15:9090/ingest
+  --forward-json-url http://192.168.131.23:9090/ingest
  ```
 
 ## 5. **capture_frames.py**
@@ -123,7 +123,7 @@ python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.j
 
 Connect to Jetson #2:
 ```bash
-ssh user@172.16.17.10
+ssh user@192.168.131.21
 ```
 in terminal 2:
 ```bash
@@ -132,7 +132,7 @@ gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_conver
 ```
 test 
 ```bash
-curl -s http://172.16.17.10:5050/prompts \
+curl -s http://192.168.131.21:5050/prompts \
   -H "Content-Type: application/json" \
   -d '{"caption":"two black suitcases with red and white labels on the ground"}'
   ```
@@ -140,7 +140,7 @@ curl -s http://172.16.17.10:5050/prompts \
 ## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
-ssh nvidia@172.16.17.15
+ssh nvidia@192.168.131.23
 ```
 Terminal 1 – Start Ollama Server
 ```bash
@@ -163,6 +163,6 @@ python3 run_llm_with_web.py
 
 Then open in your browser:
 ```bash
-http://172.16.17.15:8080/
+http://192.168.131.23:8080/
 ```
 
