@@ -8,13 +8,13 @@ ssh -X user@172.16.17.12
 ```
 **Run inside the VILA container:**
 ```bash
-jetson-containers run -it   --publish 8080:8080   --volume TODO:edit volume  nano_llm_custom /bin/bash
+jetson-containers run -it   --publish 8080:8080   --volume /home/user/Pictures/R2:/home/user/Pictures/R2  nano_llm_custom /bin/bash
 
 ```
 
 Then start the API server:
 ```bash
-python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://172.16.17.12:5050/from_vila
+python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://192.168.131.22:5050/from_vila
 ```
 test:
 ```bash 
