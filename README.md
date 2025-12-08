@@ -62,7 +62,7 @@ ssh -X user@192.168.131.22
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server_2.py \
-  --root /tmp/incoming_frames/ \
+  --root /home/user/Pictures/R2 \
   --host 0.0.0.0 \
   --port 8090 \
   --latest-only
@@ -100,8 +100,9 @@ ssh -X user@192.168.131.22
 ```
 **How to Run:**
 ```bash
-user@user-agx1:~/rqs_iai_ws/src/examples/src$ source /opt/ros/humble/setup.bash
-user@user-agx1:~/rqs_iai_ws/src/examples/src$ source ../../../install/setup.bash
+cd /rqs_iai_ws/src/examples/src
+source /opt/ros/humble/setup.bash
+source ../../../install/setup.bash
 python3 image_state_subscriber_call_vlm.py --out-dir /home/user/Pictures/R2 --vlm http://192.168.131.22:8080/describe
 ```
 
@@ -152,4 +153,21 @@ Then open in your browser:
 ```bash
 http://192.168.131.23:8080/
 ```
+
+
+### ** open the backend of the sphera-
+```bash
+docker-compose up it
+```
+
+in another terminal:
+
+```bash
+docker attach it
+pip3 install opencv-python
+sudo apt install ros-foxy-cv-bridge -y
+cd ~/workspace/src/examples/src
+python3 video_stream.py 
+```
+
 
