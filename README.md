@@ -4,7 +4,7 @@
 ## 1. **VILA API Server**
 first- get in to the jetson:
 ```
-ssh -X user@172.16.17.12
+ssh -X user@192.168.131.22
 ```
 **Run inside the VILA container:**
 ```bash
@@ -23,7 +23,7 @@ curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/j
 ## 2. **NanoOWL Object Detector**
 first- get in to the jetson:
 ```
-ssh -X user@172.16.17.12
+ssh -X user@192.168.131.22
 ```
 
 ```bash
@@ -56,7 +56,7 @@ curl -s -X POST http://172.16.17.12:5060/infer
 first- get in to the jetson:
 
 ```
-ssh -X user@172.16.17.12
+ssh -X user@192.168.131.22
 ```
 **Run:**
 ```bash
@@ -74,7 +74,7 @@ python3 display_server_2.py \
 first- get in to the jetson:
 
 ```
-ssh -X user@172.16.17.12
+ssh -X user@192.168.131.22
 ```
 **Run:**
 ```bash
@@ -92,32 +92,19 @@ python3 comm_manager_2.py \
   --forward-json-url http://192.168.131.23:9090/ingest
  ```
 
-## 5. **capture_frames.py**
+## 5. **image_state_subscriber_call_vlm.py**
 first- get in to the jetson:
 
 ```
-ssh -X user@172.16.17.12
+ssh -X user@192.168.131.22
 ```
 **How to Run:**
 ```bash
-cd ~/GIT/raspi/
- python3 receiver_vlm.py --host 0.0.0.0 --port 5001
+user@user-agx1:~/rqs_iai_ws/src/examples/src$ source /opt/ros/humble/setup.bash
+user@user-agx1:~/rqs_iai_ws/src/examples/src$ source ../../../install/setup.bash
+python3 image_state_subscriber_call_vlm.py --out-dir /home/user/Pictures/R2 --vlm http://192.168.131.22:8080/describe
 ```
 
-call for capture from raspberry Pi 
-```bash
-cd ~/GIT/raspi/
-./discover_and_capture.py --name test --count 8 --interval 15
-```
-from folder:
-```bash
- python3 capture_frames_folder.py --source /dev/video0 --frames-dir /tmp/incoming_frames/2025_10_21___15_37_21/ --loop-sleep 15 --vlm http://172.16.17.12:8080/describe
-
-```
-live from auto move: NOT RELEVANT FROM RASPI
-```bash
-python3 capture_frames.py   --source /dev/video0   --poses /opt/missions/poses.json   --gpio-pin 18 --gpio-edge rising --gpio-pull up --gpio-debounce-ms 50   --out captures --crop-frac 0.7   --vlm http://172.16.17.12:8080/describe --flip-180 --gpio-pin 12 --gpio-first-frame 16
-```
 
 ## 6. **LLM Object List Extractor**
 
