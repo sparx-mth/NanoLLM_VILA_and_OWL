@@ -8,7 +8,7 @@ ssh -X user@192.168.131.22
 ```
 **Run inside the VILA container:**
 ```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/Pictures/R2:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
+jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
 
 ```
 
@@ -62,7 +62,7 @@ ssh -X user@192.168.131.22
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server_2.py \
-  --root /home/user/Pictures/R2 \
+  --root /home/user/jetson-containers/data \
   --host 0.0.0.0 \
   --port 8090 \
   --latest-only
@@ -83,7 +83,7 @@ python3 comm_manager_2.py \
   --host 0.0.0.0 \
   --port 5050 \
   --jetson2-endpoint http://192.168.131.21:5050/prompts \
-  --captures-root /tmp/incoming_frames/ \
+  --captures-root /home/user/jetson-containers/data \
   --nanoowl-endpoint http://192.168.131.22:5060/infer \
   --forward-timeout 25 \
   --forward-retries 7 \
