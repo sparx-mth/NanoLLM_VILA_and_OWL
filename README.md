@@ -20,7 +20,43 @@ test:
 ```bash 
 curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/mnt/VLM/jetson-data/PortraitA_01.jpg"}'
 ```
-## 2. **NanoOWL Object Detector**
+
+
+## 2. *APRIL TAG**
+first- get in to the jetson:
+```
+ssh -X user@192.168.131.22
+```
+
+```bash
+source /opt/ros/humble/setup.bash
+```
+
+```bash
+
+ros2 run apriltag_ros apriltag_node --ros-args \
+  -r image_rect:=/R1/camera/image_raw \
+  -r camera_info:=/R1/camera/camera_info \
+  -p family:=36h11 \
+  -p size:=2.00 \
+  -p publish_tf:=true \
+  --log-level debug
+```
+
+in another terminal:
+```
+ssh -X user@192.168.131.22
+```
+```bash
+source /opt/ros/humble/setup.bash
+```
+```bash
+cd ~/rqs_iai_ws/src/examples/src/apriltag
+python3 tag_based_azimuth_continuous.py --ros-args -p robot_ns:=R1
+```
+
+
+## 3. **NanoOWL Object Detector**
 first- get in to the jetson:
 ```
 ssh -X user@192.168.131.22
@@ -51,7 +87,7 @@ curl -s -X POST http://172.16.17.12:5060/infer
 
 
 ```
-## 3. **Display Server (Web GUI Viewer)**
+## 4. **Display Server (Web GUI Viewer)**
 
 first- get in to the jetson:
 
@@ -69,7 +105,7 @@ python3 display_server_2.py \
 ```
 
 
-## 4. **comm_manager.py**
+## 5. **comm_manager.py**
 
 first- get in to the jetson:
 
@@ -92,7 +128,7 @@ python3 comm_manager_2.py \
   --forward-json-url http://192.168.131.23:9090/ingest
  ```
 
-## 5. **image_state_subscriber_call_vlm.py**
+## 6. **image_state_subscriber_call_vlm.py**
 first- get in to the jetson:
 
 ```
@@ -107,7 +143,7 @@ python3 image_state_subscriber_call_vlm.py --out-dir /home/user/Pictures/R2 --vl
 ```
 
 
-## 6. **LLM Object List Extractor**
+## 7. **LLM Object List Extractor**
 
 Connect to Jetson #2:
 ```bash
@@ -125,7 +161,7 @@ curl -s http://192.168.131.21:5050/prompts \
   -d '{"caption":"two black suitcases with red and white labels on the ground"}'
   ```
 
-## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
+## 8. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
 ssh nvidia@192.168.131.23
