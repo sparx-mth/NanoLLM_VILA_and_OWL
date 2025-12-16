@@ -83,10 +83,10 @@ class TagBasedAzimuth(Node):
         # IMPORTANT: must be unique tag IDs. Example mapping:
         # 15=N, 16=E, 17=S, 18=W (change to your real IDs!)
         self.tag_config = {
-            10: 0.0,    # North wall tag
-            11: 90.0,   # East wall tag
-            12: 180.0,  # South wall tag
-            13: 270.0,  # West wall tag
+            15: 0.0,    # North wall tag
+            16: 90.0,   # East wall tag
+            17: 180.0,  # South wall tag
+            18: 270.0,  # West wall tag
         }
         self.known_tag_ids = list(self.tag_config.keys())
 
@@ -243,4 +243,22 @@ class TagBasedAzimuth(Node):
                     break
 
         self.get_logger().info(
-            f"
+            f"[snapshot] yaw={yaw_deg:.1f}° | tag={info} | mode={used_mode} | img_stamp={stamp_time.nanoseconds/1e9:.3f}",
+            throttle_duration_sec=1.0,
+        )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TagBasedAzimuth()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
