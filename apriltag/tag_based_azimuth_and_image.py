@@ -87,7 +87,7 @@ class TagBasedAzimuth(Node):
 
         # If camera_frame is not provided, derive it from robot_ns
         if not self.camera_frame:
-            self.camera_frame = f"{self.robot_ns}_camera"
+            self.camera_frame = "camera"
 
         # Clean up camera frame name (remove leading "/")
         if self.camera_frame.startswith("/"):
