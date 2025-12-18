@@ -291,6 +291,7 @@ class PixelRoomMapper:
                 bbox, frame_width, frame_height, obj_class
             )
 
+
             # Constrain size
             max_width = min(
                 obj_x_m - 0.1,
