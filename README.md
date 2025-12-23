@@ -23,36 +23,40 @@ curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/j
 
 
 ## 2. *APRIL TAG**
-first- get in to the jetson:
-```
-ssh -X user@192.168.131.22
-```
-
+first- get in to the docker:
 ```bash
-source /opt/ros/humble/setup.bash
+
+ docker run -it --rm     --net=host     --ipc=host     --env="DISPLAY"     --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw"     --name ros2_apriltag     ros2-humble-apriltag
 ```
 
 ```bash
 
+source src/./ros2_env.sh 
+```
+
+
+
+```bash
 ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/R1/camera/image_raw \
-  -r camera_info:=/R1/camera/camera_info \
+  -r image_rect:=/R2/camera/image_raw \
+  -r camera_info:=/R2/camera/camera_info \
   -p family:=36h11 \
   -p size:=2.00 \
   -p publish_tf:=true \
+  -p qos_profile:=sensor_data \
   --log-level debug
 ```
 
 in another terminal:
-```
-ssh -X user@192.168.131.22
+```bash
+
+docker exec -it x bash
 ```
 ```bash
-source /opt/ros/humble/setup.bash
+source src/./ros2_env.sh 
 ```
 ```bash
-cd ~/rqs_iai_ws/src/examples/src/apriltag
-python3 tag_based_azimuth_continuous.py --ros-args -p robot_ns:=R1
+python3 tag_based_azimuth_and_image.py
 ```
 
 
@@ -151,7 +155,7 @@ ssh user@192.168.131.21
 ```
 in terminal 2:
 ```bash
-cd GIT/NanoLLM_VILA_and_OWL
+cd GIT/NanoLLM_VILA_and_OWL/LLM
 gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
 ```
 test 
