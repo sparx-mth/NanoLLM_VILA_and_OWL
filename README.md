@@ -34,8 +34,6 @@ first- get in to the docker:
 source src/./ros2_env.sh 
 ```
 
-
-
 ```bash
 ros2 run apriltag_ros apriltag_node --ros-args \
   -r image_rect:=/R2/camera/image_raw \
@@ -47,18 +45,30 @@ ros2 run apriltag_ros apriltag_node --ros-args \
   --log-level debug
 ```
 
-in another terminal:
+in another terminal run inside the backend run the video stream:
 ```bash
 
-docker exec -it x bash
+docker exec -it backend_id bash
 ```
 ```bash
 source src/./ros2_env.sh 
 ```
 ```bash
-python3 tag_based_azimuth_and_image.py
-```
+cd src/examples/src
+ python3 video_stream.py 
 
+```
+in another terminal inside the backend run the service call:
+```bash
+
+docker exec -it backend_id bash
+```
+```bash
+source src/./ros2_env.sh 
+```
+```bash
+ros2 service call /R2/start_capture std_srvs/srv/Trigger "{}"
+```
 
 ## 3. **NanoOWL Object Detector**
 first- get in to the jetson:
