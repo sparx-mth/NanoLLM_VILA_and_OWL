@@ -1,28 +1,9 @@
 
 # **Pipeline Stages**
 
-## 1. **VILA API Server**
-first- get in to the jetson:
-```
-ssh -X user@192.168.131.22
-```
-**Run inside the VILA container:**
-```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
+on the computer:
 
-```
-
-Then start the API server:
-```bash
-python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://192.168.131.22:5050/from_vila
-```
-test:
-```bash 
-curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/mnt/VLM/jetson-data/PortraitA_01.jpg"}'
-```
-
-
-## 2. *APRIL TAG**
+##  *APRIL TAG**
 first- get in to the docker:
 ```bash
 
@@ -56,11 +37,10 @@ source src/./ros2_env.sh
 ```bash
 cd src/examples/src
  python3 video_stream.py 
-
 ```
+
 in another terminal inside the backend run the service call:
 ```bash
-
 docker exec -it backend_id bash
 ```
 ```bash
@@ -69,6 +49,30 @@ source src/./ros2_env.sh
 ```bash
 ros2 service call /R2/start_capture std_srvs/srv/Trigger "{}"
 ```
+
+
+## 1. **VILA API Server**
+
+first- get in to the jetson:
+```
+ssh -X user@192.168.131.22
+```
+**Run inside the VILA container:**
+```bash
+jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
+
+```
+
+Then start the API server:
+```bash
+python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://192.168.131.22:5050/from_vila
+```
+test:
+```bash 
+curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/mnt/VLM/jetson-data/PortraitA_01.jpg"}'
+```
+
+
 
 ## 3. **NanoOWL Object Detector**
 first- get in to the jetson:
@@ -92,6 +96,7 @@ python3 nanoowl_service.py \
   --engine /opt/nanoowl/data/owl_image_encoder_patch32.engine \
   --host 0.0.0.0 --port 5060 --min-score 0.2
 ```
+
 test
 ```bash
 curl -s -X POST http://172.16.17.12:5060/infer   
