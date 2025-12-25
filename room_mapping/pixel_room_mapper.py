@@ -158,7 +158,7 @@ class PixelRoomMapper:
 
             # Camera at center of room
             self.camera_x_m = self.room_width_m / 2
-            self.camera_y_m = self.room_height_m - 0.3
+            self.camera_y_m = self.room_height_m / 2
             print(self.camera_x_m, self.camera_y_m)
             # Map dimensions from existing map
             self.map_height, self.map_width = self.existing_grid.shape
@@ -170,7 +170,10 @@ class PixelRoomMapper:
         self.all_objects = []
 
         # Fixed distance assumption
-        self.FIXED_DISTANCE = 1.0
+        self.FIXED_DISTANCE = 0.7
+
+        # Duplicate detection threshold (percentage of shared cells)
+        self.duplicate_overlap_threshold = 0.0  # 30% shared cells
 
     def estimate_object_size_from_pixels(self,
                                          bbox: List[int],
@@ -209,7 +212,7 @@ class PixelRoomMapper:
         obj_y_m = self.camera_y_m - self.FIXED_DISTANCE * math.sin(object_angle)
 
         # Clamp position to room boundaries
-        margin = 0.2
+        margin = 0.3
         obj_x_m = max(margin, min(self.room_width_m - margin, obj_x_m))
         obj_y_m = max(margin, min(self.room_height_m - margin, obj_y_m))
 
@@ -222,6 +225,28 @@ class PixelRoomMapper:
         grid_x = max(0, min(self.grid_width - 1, grid_x))
         grid_y = max(0, min(self.grid_height - 1, grid_y))
         return grid_x, grid_y
+
+    def get_object_cells(self, obj: Dict) -> set:
+        """Get the set of grid cells occupied by an object."""
+        x1, y1, x2, y2 = obj["bbox"]
+        cells = set()
+        for y in range(y1, y2):
+            for x in range(x1, x2):
+                cells.add((x, y))
+        return cells
+
+    def is_duplicate_object(self, obj_class: str, new_cells: set) -> bool:
+        """Check if an object with same name shares cells with existing objects."""
+        for existing_obj in self.all_objects:
+            if existing_obj["type"] == obj_class:
+                existing_cells = self.get_object_cells(existing_obj)
+                shared_cells = new_cells & existing_cells
+                if len(shared_cells) >= 0:
+                    # Calculate overlap as percentage of the smaller object
+                    smaller_size = min(len(new_cells), len(existing_cells))
+                    if smaller_size > 0 and len(shared_cells) / smaller_size >= self.duplicate_overlap_threshold:
+                        return True
+        return False
 
     def add_scan(self, scan_data: Dict, yaw: float = 0.0):
         """Add a scan to the room map."""
@@ -286,6 +311,11 @@ class PixelRoomMapper:
             width_cells = max(1, int(width_m / self.grid_resolution))
             height_cells = max(1, int(height_m / self.grid_resolution))
 
+            # Swap dimensions based on viewing direction
+            # When looking along X axis (yaw near 0 or π), swap width/height
+            if abs(math.cos(yaw)) > abs(math.sin(yaw)):
+                width_cells, height_cells = height_cells, width_cells
+
             x1 = obj_grid_x - width_cells // 2
             y1 = obj_grid_y - height_cells // 2
             x2 = x1 + width_cells
@@ -297,6 +327,13 @@ class PixelRoomMapper:
                 y1 += self.room_bbox[1]
                 x2 += self.room_bbox[0]
                 y2 += self.room_bbox[1]
+
+            # Check for duplicate object (same name and shared cells)
+            new_obj_temp = {"bbox": [x1, y1, x2, y2]}
+            new_cells = self.get_object_cells(new_obj_temp)
+            if self.is_duplicate_object(obj_class, new_cells):
+                print(f"  Skipping duplicate: {obj_class} (shares cells with existing)")
+                continue
 
             # Store simplified object info
             obj_info = {
@@ -459,7 +496,7 @@ def process_files(mode="standalone", existing_map=None, existing_json=None, room
             existing_json_file=existing_json,
             room_bbox=room_bbox,
             room_name=room_name,
-            camera_fov_h=50,
+            camera_fov_h=100,
             camera_fov_v=60
         )
 
