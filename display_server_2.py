@@ -86,7 +86,7 @@ class Item:
 
 def _extract_llm_terms(doc: Dict) -> List[str]:
     try:
-        terms = doc.get("llm_prompts", [])
+        terms = doc.get("nanoowl", {}).get("prompts", [])
         if isinstance(terms, list):
             seen = set()
             out = []

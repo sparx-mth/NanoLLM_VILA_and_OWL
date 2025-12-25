@@ -24,10 +24,12 @@ Notes:
 """
 
 from flask import Flask, request, jsonify
+from pathlib import Path
 import os
 import json
 import time
 import glob
+import shutil
 import argparse
 from collections import deque
 import hashlib
@@ -43,7 +45,7 @@ JETSON2_ENDPOINT = None      # e.g., http://172.16.17.11:5050/prompts
 NANOOWL_ENDPOINT = None      # e.g., http://172.16.17.11:5060/infer
 CAPTURES_ROOT = None         # e.g., /home/user/jetson-containers/data/images/captures
 
-FORWARD_TIMEOUT = 20.0       # Jetson2 prompts timeout
+FORWARD_TIMEOUT = 30.0       # Jetson2 prompts timeout
 FORWARD_RETRIES = 3          # Jetson2 prompts retries
 
 NANOOWL_TIMEOUT = 45.0       # NanoOWL infer timeout
@@ -67,6 +69,7 @@ LAST = {
 
 # -------------------- Helpers --------------------
 
+
 def _http_post_json(url: str, payload: dict, timeout: float = 6.0):
     """
     POST JSON using stdlib (no requests). Returns (status_code, response_text).
@@ -89,31 +92,47 @@ def _http_post_json(url: str, payload: dict, timeout: float = 6.0):
     except Exception as e:
         return -1, str(e)
 
+def _is_in_ann_folder(fp: str) -> bool:
+    p = Path(fp)
+    return any(str(part).lower().endswith("_ann") for part in p.parents)
 
 def _find_latest_image_and_json(root_dir: str):
-    """
-    Recursively find the most recent JPG/JPEG/PNG under root_dir and return
-    (image_path, json_path). If the matching JSON doesn't exist yet, json_path
-    will be the expected sidecar path (same basename, .json).
-    """
-    """
-    Find the most recent *original* image (NOT an _ann image) and its sidecar JSON.
-    """
     if not root_dir or not os.path.isdir(root_dir):
         return None, None
 
-    patterns = ["**/*.jpg", "**/*.jpeg", "**/*.png"]
-    latest_img = None
-    latest_mtime = -1.0
+    patterns = ["**/*"]
+    latest_folder = None
+    latest_ctime = -1.0
 
     for pat in patterns:
-        for fp in glob.glob(os.path.join(root_dir, pat), recursive=True):
+        for fp in glob.glob(os.path.join(root_dir, pat), recursive=False):
             if _ANN_RE.search(fp):
                 continue
+            if _is_in_ann_folder(fp):
+                continue
             try:
-                mtime = os.path.getmtime(fp)
-                if mtime > latest_mtime:
-                    latest_mtime = mtime
+                mtime = os.path.getctime(fp)
+                if mtime > latest_ctime:
+                    latest_ctime = mtime
+                    latest_folder = fp
+            except Exception:
+                pass
+    if not latest_folder:
+        return None, None
+    patterns = ["**/*.jpg", "**/*.jpeg", "**/*.png"]
+    latest_img = None
+    latest_ctime = -1.0
+
+    for pat in patterns:
+        for fp in glob.glob(os.path.join(latest_folder, pat), recursive=False):
+            if _ANN_RE.search(fp):
+                continue
+            if _is_in_ann_folder(fp):
+                continue
+            try:
+                mtime = os.path.getctime(fp)
+                if mtime > latest_ctime:
+                    latest_ctime = mtime
                     latest_img = fp
             except Exception:
                 pass
@@ -125,29 +144,36 @@ def _find_latest_image_and_json(root_dir: str):
     sidecar_json = base + ".json"
     return latest_img, sidecar_json
 
+
 def _update_sidecar_json(json_path: str, updater: dict):
     """
-    Safe write/update to sidecar JSON:
-      - read existing dict or start a new one
-      - merge 'updater' keys
-      - write atomically via *.tmp then replace
+    Robustly updates the JSON by merging new data with existing content on disk.
     """
-    obj = {}
-    if os.path.isfile(json_path):
+    for attempt in range(5):  # Retry up to 5 times if file is busy
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                obj = json.load(f)
-        except Exception:
             obj = {}
+            if os.path.isfile(json_path):
+                with open(json_path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
 
-    # Merge/update top-level keys in-place
-    for k, v in updater.items():
-        obj[k] = v
+            # Deep merge the new data (OWL or VLM results)
+            for k, v in updater.items():
+                if isinstance(v, dict) and k in obj and isinstance(obj[k], dict):
+                    obj[k].update(v)
+                else:
+                    obj[k] = v
 
-    tmp = json_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, json_path)
+            # Write to a unique temp file first to prevent corruption
+            tmp = f"{json_path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+
+            os.replace(tmp, json_path)
+            return True
+        except (IOError, json.JSONDecodeError) as e:
+            time.sleep(0.1)  # Wait for other process to release file
+    return False
+
 
 
 def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
@@ -175,6 +201,25 @@ def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
         return -1, str(e)
 
 
+def _ann_outpath_for_image(image_path: str) -> str:
+    """
+    Return output path for annotated image inside a *run-level* folder named <run_dir>_ann.
+    Example:
+      image_path = /.../captures/2025_10_19___15_53_28/x-010y017z055yaw0000000___2025_10_19___15_54_07.jpg
+      => /.../captures/2025_10_19___15_53_28_ann/x-010y017z055yaw0000000___2025_10_19___15_54_07_ann.jpg
+    """
+    base_dir = os.path.dirname(image_path)                     # e.g. .../captures/2025_10_19___15_53_28
+    parent_dir = os.path.dirname(base_dir)                     # e.g. .../captures
+    run_name = os.path.basename(base_dir)                      # e.g. 2025_10_19___15_53_28
+
+    ann_dir = os.path.join(parent_dir, f"{run_name}_ann")      # e.g. .../captures/2025_10_19___15_53_28_ann
+    os.makedirs(ann_dir, exist_ok=True)
+
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    base_name = re.sub(r"_ann$", "", base_name, flags=re.IGNORECASE)
+    out_name = f"{base_name}_ann.jpg"
+
+    return os.path.join(ann_dir, out_name)
 
 
 # -------------------- Annotation utilities (OpenCV) --------------------
@@ -296,15 +341,13 @@ def _annotate_from_json(image_path: str, json_path: str):
         cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=7)
         _draw_label_box(img, x1, y1, text, color)
 
-    base, _ = os.path.splitext(image_path)
-
-    base = re.sub(r"_ann$", "", base, flags=re.IGNORECASE)
-    out_path = base + "_ann.jpg"
+    out_path = _ann_outpath_for_image(image_path)
 
     ok = cv2.imwrite(out_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
     if ok:
         print(f"[annotate] wrote {out_path}")
         return True
+
     print("[annotate][error] failed to write annotated image")
     return False
 
@@ -351,82 +394,86 @@ def _post_full_json(url: str, obj: dict, timeout: float, retries: int = 3, heade
     return last_status, last_body
 
 
-# -------------------- HTTP API --------------------
+def _update_sidecar_json_robust(json_path: str, new_data: dict):
+    """
+    Ensures steps 1-4 are merged correctly without deleting existing keys.
+    """
+    for _ in range(5):  # Retry loop to handle file locking
+        try:
+            current_data = {}
+            if os.path.exists(json_path):
+                with open(json_path, 'r') as f:
+                    current_data = json.load(f)
 
+            # Deep merge the new results into the existing JSON
+            # This preserves 'pose', 'entries', and 'vlm' while adding 'nanoowl'
+            for key, value in new_data.items():
+                if isinstance(value, dict) and key in current_data:
+                    current_data[key].update(value)
+                else:
+                    current_data[key] = value
+
+            # Atomic write
+            tmp_path = json_path + ".tmp"
+            with open(tmp_path, 'w') as f:
+                json.dump(current_data, f, indent=2)
+            os.replace(tmp_path, json_path)
+            return current_data  # Return the FULL json for the planner
+        except (json.JSONDecodeError, IOError):
+            time.sleep(0.05)
+    return None
+
+
+# -------------------- HTTP API --------------------
 @app.post("/from_vila")
 def from_vila():
     """
-    Entry point called by VILA (text/plain body = caption).
-    We MUST:
-      1) Forward caption to Jetson2 /prompts and WAIT for prompts.
-      2) Only then find the latest image and call NanoOWL with (image, prompts).
-      3) Store NanoOWL output into the sidecar JSON next to that image.
-      4) **NEW:** Render annotated image _ann.jpg next to the original.
+    Revised Entry Point for 5-Step Pipeline:
+    1. Capture + Azimuth (already in JSON)
+    2. VLM Caption (received here)
+    3. LLM Prompts (Step 3 - converted here)
+    4. NanoOWL BBoxes (Step 4 - processed here)
+    5. Forward Full JSON (Step 5 - triggered here)
     """
-    print("hello")
-    caption = request.get_data(as_text=True, parse_form_data=False).strip()
+    # ---- 1) Parse JSON input from VILA ----
+    data = request.get_json(silent=True)
+    if not data or "caption" not in data:
+        # Fallback for old plain-text VILA format
+        caption = request.get_data(as_text=True).strip()
+        target_image = None
+    else:
+        caption = data.get("caption", "").strip()
+        target_image = data.get("image_name")  # e.g., "R2_20251224_105000.jpg"
+
     if not caption:
-        print(f"not captoin")
         return jsonify({"ok": False, "error": "empty caption"}), 400
 
-    ts = int(time.time())
-    print(f"[from_vila][{ts}] {caption}")
-    LAST["vila_caption"] = {"ts": ts, "text": caption}
-    HISTORY.appendleft({"src": "vila", "ts": ts, "text": caption})
+    # ---- 2) Find Specific Image + Sidecar (ID Anchor) ----
+    if target_image:
+        img_path, json_path = _find_specific_image(CAPTURES_ROOT, target_image)
+    else:
+        img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
 
-    # ---- 1) Send to Jetson2 and wait for prompts ----
-    f_status, f_body, prompts = None, None, None
+    if not img_path or not os.path.exists(img_path):
+        return jsonify({"ok": False, "error": f"Image {target_image} not found"}), 404
+
+    # ---- 3) Get LLM Prompts (Step 3) ----
+    prompts = None
     if JETSON2_ENDPOINT:
-        last_err = None
-        for attempt in range(1, int(FORWARD_RETRIES or 1) + 1):
-            f_status, f_body = _http_post_json(
-                JETSON2_ENDPOINT, {"sentence": caption}, timeout=float(FORWARD_TIMEOUT or 10.0)
-            )
-            if f_status not in (-1, 408, 504) and not (isinstance(f_status, int) and f_status >= 500):
-                break
-            last_err = f_body
-            print(f"[forward->jetson2] attempt {attempt} failed: status={f_status} body={str(f_body)[:180]}")
-            time.sleep(min(2.0 * attempt, 6.0))
-
-        print(f"[forward->jetson2] status={f_status} body={f_body[:180] if isinstance(f_body, str) else f_body}")
+        f_status, f_body = _http_post_json(
+            JETSON2_ENDPOINT, {"sentence": caption}, timeout=30.0
+        )
         try:
-            data = json.loads(f_body) if isinstance(f_body, str) else {}
-            if isinstance(data, dict) and isinstance(data.get("prompts"), list):
-                prompts = [str(x) for x in data["prompts"]]
-        except Exception:
+            resp_data = json.loads(f_body)
+            prompts = resp_data.get("prompts")  # This is your list: ["box", "hat"]
+        except Exception as e:
+            print(f"[error] LLM Converter failed: {e}")
             prompts = None
 
-        LAST["last_forward_status"] = {"status": f_status, "body": f_body}
-        if prompts:
-            LAST["jetson2_prompts"] = {"ts": int(time.time()), "prompts": prompts}
-            HISTORY.appendleft({"src": "jetson2", "ts": int(time.time()), "prompts": prompts})
-            print(f"[jetson2][prompts] {prompts}")
-        else:
-            print("[jetson2][warn] no prompts parsed")
-
     if not prompts:
-        return jsonify({
-            "ok": True,
-            "note": "prompts missing; NanoOWL not called",
-            "forward_status": f_status,
-            "prompts": None
-        })
+        return jsonify({"ok": False, "error": "failed to get prompts from LLM converter"}), 500
 
-    # ---- 2) Find latest image + sidecar JSON ----
-    img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
-    LAST["last_image_path"] = img_path
-    if not img_path:
-        print(f"[nanoowl][warn] no image found under {CAPTURES_ROOT}")
-        return jsonify({
-            "ok": False,
-            "error": f"no image found under {CAPTURES_ROOT}",
-            "prompts": prompts
-        }), 500
-    if not json_path:
-        base, _ = os.path.splitext(img_path)
-        json_path = base + ".json"
-
-    # ---- 3) Call NanoOWL ----
+    # ---- 4) Call NanoOWL (Step 4) ----
     status, body = _post_nanoowl_multipart(
         endpoint=NANOOWL_ENDPOINT,
         image_path=img_path,
@@ -434,68 +481,63 @@ def from_vila():
         annotate=NANOOWL_ANNOTATE,
         timeout=NANOOWL_TIMEOUT
     )
-    LAST["nanoowl_result"] = {"status": status, "body": body if not isinstance(body, str) else body[:2000]}
-    print(f"[nanoowl] status={status} body_type={'json' if isinstance(body, dict) else 'text'}")
 
-    # ---- 4) Write NanoOWL result to sidecar JSON ----
+    # ---- 5) Robust Merge Steps 2, 3, & 4 into JSON ----
     now = time.time()
     iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-    nano_payload = {
-        "ts": now,
-        "iso_time": iso,
-        "endpoint": NANOOWL_ENDPOINT,
-        "status": status,
-        "prompts": prompts,
-        "annotate": int(NANOOWL_ANNOTATE),
-        "result": body
+
+    # We build a payload that explicitly stores Step 2 and Step 3 results
+    update_payload = {
+        "vlm_caption": caption,  # Result of Step 2
+        "llm_prompts": prompts,  # Result of Step 3 (Explicitly saved!)
+        "nanoowl": {  # Result of Step 4
+            "ts": now,
+            "iso_time": iso,
+            "status": status,
+            "result": body  # Contains the BBoxes
+        }
     }
-    try:
-        _update_sidecar_json(json_path, {"nanoowl": nano_payload})
-        print(f"[nanoowl][json] updated: {json_path}")
 
-        # ---- 4.1) If has BBOX, forward the FULL JSON to remote machine ----
-        try:
-            meta = _load_json(json_path)
-            if meta and _has_any_bbox(meta.get("nanoowl")):
-                if FORWARD_JSON_URL:
-                    # 1) take the local sidecar basename (no folders)
-                    sidecar_basename = os.path.basename(json_path)  # e.g. x0200...__11_31_15.json
+    # Use the robust merger to preserve Step 1 (Pose/Azimuth)
+    full_json = _update_sidecar_json_robust(json_path, update_payload)
 
-                    # 2) embed it in the payload so the receiver can save with the SAME name
-                    meta["_sidecar_basename"] = sidecar_basename
+    # ---- 6) Forward Full JSON to Planner (Step 5) ----
+    forward_ok = False
+    if full_json and FORWARD_JSON_URL:
+        # Check if we actually found bboxes before bothering the mapper
+        if _has_any_bbox(full_json.get("nanoowl")):
+            sidecar_basename = os.path.basename(json_path)
+            full_json["_sidecar_basename"] = sidecar_basename
 
-                    # 3) (optional) also send as HTTP header for convenience
-                    headers = {"X-Sidecar-Basename": sidecar_basename}
+            f_status, f_resp = _post_full_json(
+                url=FORWARD_JSON_URL,
+                obj=full_json,
+                timeout=FORWARD_JSON_TIMEOUT,
+                retries=FORWARD_JSON_RETRIES,
+                headers={"X-Sidecar-Basename": sidecar_basename}
+            )
+            forward_ok = (200 <= f_status < 300)
 
-                    # 4) post
-                    s, b = _post_full_json(
-                    url=FORWARD_JSON_URL,
-                    obj=meta,
-                    timeout=FORWARD_JSON_TIMEOUT,
-                    retries=FORWARD_JSON_RETRIES,
-                    headers=headers,             #  <<<<< add
-                )   
-                print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
-
-        except Exception as e:
-            print(f"[forward-json][error] {e}")
-
-    except Exception as e:
-        print(f"[nanoowl][json][error] failed to update {json_path}: {e}")
-
-    # ---- 5) **Auto-annotate** and write <basename>_ann.jpg ----
+    # 7) Annotate the image for visual debugging
     ann_ok = _annotate_from_json(img_path, json_path)
 
     return jsonify({
         "ok": True,
-        "caption": caption,
-        "prompts": prompts,
-        "image_path": img_path,
-        "nanoowl_status": status,
-        "nanoowl_body": body,
-        "sidecar_json": json_path,
+        "image": os.path.basename(img_path),
+        "steps_completed": ["VLM", "LLM_PROMPTS", "NANOOWL"],
+        "forwarded_to_planner": forward_ok,
         "annotated": bool(ann_ok)
     })
+
+def _find_specific_image(root_dir, filename):
+    """
+    Locates a specific file within the recursive captures tree.
+    """
+    for p in Path(root_dir).rglob(filename):
+        img_path = str(p)
+        json_path = str(p.with_suffix('.json'))
+        return img_path, json_path
+    return None, None
 
 
 @app.get("/latest")
@@ -525,7 +567,7 @@ def main():
     p.add_argument("--nanoowl-endpoint", required=True,
                    help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
 
-    p.add_argument("--forward-timeout", type=float, default=20.0,
+    p.add_argument("--forward-timeout", type=float, default=30.0,
                    help="Timeout (sec) for POST to Jetson-2")
     p.add_argument("--forward-retries", type=int, default=3,
                    help="Retries for POST to Jetson-2 on failure/timeout")
@@ -535,10 +577,10 @@ def main():
     p.add_argument("--nanoowl-annotate", type=int, default=0,
                    help="Pass annotate=0/1 to NanoOWL")
 
-    
+
     p.add_argument("--forward-json-url", default="http://172.17.16.9:9090/ingest",
                    help="If set, forward the FULL sidecar JSON here, but only when NanoOWL has BBOX detections")
-    p.add_argument("--forward-json-timeout", type=float, default=8.0,
+    p.add_argument("--forward-json-timeout", type=float, default=10.0,
                    help="Timeout (sec) for forwarding full JSON")
     p.add_argument("--forward-json-retries", type=int, default=3,
                    help="Retries for forwarding full JSON")
@@ -569,5 +611,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

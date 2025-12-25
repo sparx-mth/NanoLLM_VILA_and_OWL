@@ -189,25 +189,4 @@ pip3 install requirements.txt
 python3 run_llm_with_web.py
 ```
 
-Then open in your browser:
-```bash
-http://192.168.131.23:8080/
-```
-
-
-### ** open the backend of the sphera-
-```bash
-docker-compose up it
-```
-
-in another terminal:
-
-```bash
-docker attach it
-pip3 install opencv-python
-sudo apt install ros-foxy-cv-bridge -y
-cd ~/workspace/src/examples/src
-python3 video_stream.py 
-```
-
 
