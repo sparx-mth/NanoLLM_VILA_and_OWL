@@ -98,47 +98,59 @@ def _is_in_ann_folder(fp: str) -> bool:
 
 def _find_latest_image_and_json(root_dir: str):
     if not root_dir or not os.path.isdir(root_dir):
+        print("Failed #1")
         return None, None
 
     patterns = ["**/*"]
     latest_folder = None
-    latest_ctime = -1.0
+    latest_mtime = -1.0
 
-    for pat in patterns:
-        for fp in glob.glob(os.path.join(root_dir, pat), recursive=False):
-            if _ANN_RE.search(fp):
-                continue
-            if _is_in_ann_folder(fp):
-                continue
-            try:
-                mtime = os.path.getctime(fp)
-                if mtime > latest_ctime:
-                    latest_ctime = mtime
-                    latest_folder = fp
-            except Exception:
-                pass
+    root_path = Path(root_dir)
+    assert root_path.exists(), f"{root_dir} does not exist"
+    for fp in root_path.iterdir():
+        if not fp.is_dir():
+            continue
+
+        if _ANN_RE.search(str(fp)):
+            continue
+        if _is_in_ann_folder(str(fp)):
+            continue
+        try:
+            mtime = os.path.getctime(fp)
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_folder = fp
+        except Exception as exp:
+            print(f"Failed #2 {exp}")
     if not latest_folder:
+        print(f"Folder not found")
         return None, None
+
     patterns = ["**/*.jpg", "**/*.jpeg", "**/*.png"]
     latest_img = None
-    latest_ctime = -1.0
+    latest_mtime = -1.0
+    print(f"latest folder: {latest_folder}")
 
-    for pat in patterns:
-        for fp in glob.glob(os.path.join(latest_folder, pat), recursive=False):
-            if _ANN_RE.search(fp):
-                continue
-            if _is_in_ann_folder(fp):
-                continue
-            try:
-                mtime = os.path.getctime(fp)
-                if mtime > latest_ctime:
-                    latest_ctime = mtime
-                    latest_img = fp
-            except Exception:
-                pass
+    latest_folder_path = Path(latest_folder)
+    assert latest_folder_path.is_dir(), f"{latest_folder_path} does not exist or is not a dir"
+    for fp in latest_folder_path.iterdir():
+        if not fp.is_file() or fp.suffix not in [".jpg", ".jpeg", ".png"]:
+            continue
+        print(f"Processing {fp}")
 
+        try:
+            mtime = os.path.getctime(fp)
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_img = fp
+        except Exception as exp:
+            print(f"Failed #3 {exp}")
+            pass
     if not latest_img:
         return None, None
+
+    latest_img = str(latest_img)
+    print(f"latest image: {latest_img}")
 
     base, _ = os.path.splitext(latest_img)
     sidecar_json = base + ".json"
@@ -428,52 +440,77 @@ def _update_sidecar_json_robust(json_path: str, new_data: dict):
 @app.post("/from_vila")
 def from_vila():
     """
-    Revised Entry Point for 5-Step Pipeline:
-    1. Capture + Azimuth (already in JSON)
-    2. VLM Caption (received here)
-    3. LLM Prompts (Step 3 - converted here)
-    4. NanoOWL BBoxes (Step 4 - processed here)
-    5. Forward Full JSON (Step 5 - triggered here)
+    Entry point called by VILA (text/plain body = caption).
+    We MUST:
+      1) Forward caption to Jetson2 /prompts and WAIT for prompts.
+      2) Only then find the latest image and call NanoOWL with (image, prompts).
+      3) Store NanoOWL output into the sidecar JSON next to that image.
+      4) **NEW:** Render annotated image _ann.jpg next to the original.
     """
-    # ---- 1) Parse JSON input from VILA ----
-    data = request.get_json(silent=True)
-    if not data or "caption" not in data:
-        # Fallback for old plain-text VILA format
-        caption = request.get_data(as_text=True).strip()
-        target_image = None
-    else:
-        caption = data.get("caption", "").strip()
-        target_image = data.get("image_name")  # e.g., "R2_20251224_105000.jpg"
-
+    print("hello")
+    caption = request.get_data(as_text=True, parse_form_data=False).strip()
     if not caption:
+        print(f"not captoin")
         return jsonify({"ok": False, "error": "empty caption"}), 400
 
-    # ---- 2) Find Specific Image + Sidecar (ID Anchor) ----
-    if target_image:
-        img_path, json_path = _find_specific_image(CAPTURES_ROOT, target_image)
-    else:
-        img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
+    ts = int(time.time())
+    print(f"[from_vila][{ts}] {caption}")
+    LAST["vila_caption"] = {"ts": ts, "text": caption}
+    HISTORY.appendleft({"src": "vila", "ts": ts, "text": caption})
 
-    if not img_path or not os.path.exists(img_path):
-        return jsonify({"ok": False, "error": f"Image {target_image} not found"}), 404
-
-    # ---- 3) Get LLM Prompts (Step 3) ----
-    prompts = None
+    # ---- 1) Send to Jetson2 and wait for prompts ----
+    f_status, f_body, prompts = None, None, None
     if JETSON2_ENDPOINT:
-        f_status, f_body = _http_post_json(
-            JETSON2_ENDPOINT, {"sentence": caption}, timeout=30.0
-        )
+        last_err = None
+        for attempt in range(1, int(FORWARD_RETRIES or 1) + 1):
+            f_status, f_body = _http_post_json(
+                JETSON2_ENDPOINT, {"sentence": caption}, timeout=float(FORWARD_TIMEOUT or 10.0)
+            )
+            if f_status not in (-1, 408, 504) and not (isinstance(f_status, int) and f_status >= 500):
+                break
+            last_err = f_body
+            print(f"[forward->jetson2] attempt {attempt} failed: status={f_status} body={str(f_body)[:180]}")
+            time.sleep(min(2.0 * attempt, 6.0))
+
+        print(f"[forward->jetson2] status={f_status} body={f_body[:180] if isinstance(f_body, str) else f_body}")
         try:
-            resp_data = json.loads(f_body)
-            prompts = resp_data.get("prompts")  # This is your list: ["box", "hat"]
-        except Exception as e:
-            print(f"[error] LLM Converter failed: {e}")
+            data = json.loads(f_body) if isinstance(f_body, str) else {}
+            if isinstance(data, dict) and isinstance(data.get("prompts"), list):
+                prompts = [str(x) for x in data["prompts"]]
+        except Exception:
             prompts = None
 
-    if not prompts:
-        return jsonify({"ok": False, "error": "failed to get prompts from LLM converter"}), 500
+        LAST["last_forward_status"] = {"status": f_status, "body": f_body}
+        if prompts:
+            LAST["jetson2_prompts"] = {"ts": int(time.time()), "prompts": prompts}
+            HISTORY.appendleft({"src": "jetson2", "ts": int(time.time()), "prompts": prompts})
+            print(f"[jetson2][prompts] {prompts}")
+        else:
+            print("[jetson2][warn] no prompts parsed")
 
-    # ---- 4) Call NanoOWL (Step 4) ----
+    if not prompts:
+        return jsonify({
+            "ok": True,
+            "note": "prompts missing; NanoOWL not called",
+            "forward_status": f_status,
+            "prompts": None
+        })
+
+    # ---- 2) Find latest image + sidecar JSON ----
+    img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
+    LAST["last_image_path"] = img_path
+    if not img_path:
+        print(f"[nanoowl][warn] no image found under {CAPTURES_ROOT}")
+        return jsonify({
+            "ok": False,
+            "error": f"no image found under {CAPTURES_ROOT}",
+            "prompts": prompts
+        }), 500
+    if not json_path:
+        base, _ = os.path.splitext(img_path)
+        json_path = base + ".json"
+
+    # ---- 3) Call NanoOWL ----
     status, body = _post_nanoowl_multipart(
         endpoint=NANOOWL_ENDPOINT,
         image_path=img_path,
@@ -481,51 +518,66 @@ def from_vila():
         annotate=NANOOWL_ANNOTATE,
         timeout=NANOOWL_TIMEOUT
     )
+    LAST["nanoowl_result"] = {"status": status, "body": body if not isinstance(body, str) else body[:2000]}
+    print(f"[nanoowl] status={status} body_type={'json' if isinstance(body, dict) else 'text'}")
 
-    # ---- 5) Robust Merge Steps 2, 3, & 4 into JSON ----
+    # ---- 4) Write NanoOWL result to sidecar JSON ----
     now = time.time()
     iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-
-    # We build a payload that explicitly stores Step 2 and Step 3 results
-    update_payload = {
-        "vlm_caption": caption,  # Result of Step 2
-        "llm_prompts": prompts,  # Result of Step 3 (Explicitly saved!)
-        "nanoowl": {  # Result of Step 4
-            "ts": now,
-            "iso_time": iso,
-            "status": status,
-            "result": body  # Contains the BBoxes
-        }
+    nano_payload = {
+        "ts": now,
+        "iso_time": iso,
+        "endpoint": NANOOWL_ENDPOINT,
+        "status": status,
+        "prompts": prompts,
+        "annotate": int(NANOOWL_ANNOTATE),
+        "result": body
     }
+    try:
+        _update_sidecar_json(json_path, {"nanoowl": nano_payload})
+        print(f"[nanoowl][json] updated: {json_path}")
 
-    # Use the robust merger to preserve Step 1 (Pose/Azimuth)
-    full_json = _update_sidecar_json_robust(json_path, update_payload)
+        # ---- 4.1) If has BBOX, forward the FULL JSON to remote machine ----
+        try:
+            meta = _load_json(json_path)
+            if meta and _has_any_bbox(meta.get("nanoowl")):
+                if FORWARD_JSON_URL:
+                    # 1) take the local sidecar basename (no folders)
+                    sidecar_basename = os.path.basename(json_path)  # e.g. x0200...__11_31_15.json
 
-    # ---- 6) Forward Full JSON to Planner (Step 5) ----
-    forward_ok = False
-    if full_json and FORWARD_JSON_URL:
-        # Check if we actually found bboxes before bothering the mapper
-        if _has_any_bbox(full_json.get("nanoowl")):
-            sidecar_basename = os.path.basename(json_path)
-            full_json["_sidecar_basename"] = sidecar_basename
+                    # 2) embed it in the payload so the receiver can save with the SAME name
+                    meta["_sidecar_basename"] = sidecar_basename
 
-            f_status, f_resp = _post_full_json(
-                url=FORWARD_JSON_URL,
-                obj=full_json,
-                timeout=FORWARD_JSON_TIMEOUT,
-                retries=FORWARD_JSON_RETRIES,
-                headers={"X-Sidecar-Basename": sidecar_basename}
-            )
-            forward_ok = (200 <= f_status < 300)
+                    # 3) (optional) also send as HTTP header for convenience
+                    headers = {"X-Sidecar-Basename": sidecar_basename}
 
-    # 7) Annotate the image for visual debugging
+                    # 4) post
+                    s, b = _post_full_json(
+                    url=FORWARD_JSON_URL,
+                    obj=meta,
+                    timeout=FORWARD_JSON_TIMEOUT,
+                    retries=FORWARD_JSON_RETRIES,
+                    headers=headers,             #  <<<<< add
+                )
+                print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
+
+        except Exception as e:
+            print(f"[forward-json][error] {e}")
+
+    except Exception as e:
+        print(f"[nanoowl][json][error] failed to update {json_path}: {e}")
+
+    # ---- 5) **Auto-annotate** and write <basename>_ann.jpg ----
     ann_ok = _annotate_from_json(img_path, json_path)
 
     return jsonify({
         "ok": True,
-        "image": os.path.basename(img_path),
-        "steps_completed": ["VLM", "LLM_PROMPTS", "NANOOWL"],
-        "forwarded_to_planner": forward_ok,
+        "caption": caption,
+        "prompts": prompts,
+        "image_path": img_path,
+        "nanoowl_status": status,
+        "nanoowl_body": body,
+        "sidecar_json": json_path,
         "annotated": bool(ann_ok)
     })
 
@@ -611,3 +663,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
