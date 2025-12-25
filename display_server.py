@@ -48,6 +48,7 @@ from typing import Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, render_template_string, send_from_directory, request, abort
 
+
 # -----------------
 # Config & parsing
 # -----------------
@@ -58,10 +59,12 @@ def parse_args():
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8090)
     p.add_argument("--scan-interval", type=float, default=2.0, help="Seconds between UI auto-refreshes")
-    p.add_argument("--latest-only", action="store_true",help="Show only the most-recent subfolder under --root (auto-updates on refresh)")
+    p.add_argument("--latest-only", action="store_true",
+                   help="Show only the most-recent subfolder under --root (auto-updates on refresh)")
     p.add_argument("--static", dest="static_dir", default=None,
                    help="Directory for static assets (logo, etc.). Defaults to './static' next to this script.")
     return p.parse_args()
+
 
 # -----------------
 # Model
@@ -70,15 +73,17 @@ def parse_args():
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 JSON_EXT = ".json"
 
+
 @dataclass
 class Item:
-    basename: str              # file base w/o extension
-    image_rel: str             # relative path from ROOT
-    json_rel: Optional[str]    # relative path from ROOT (may be None)
-    mtime: float               # latest mtime among image/json
-    text: str                  # extracted caption/answer (best-effort)
-    llm_terms: List[str] = None      #  LLM (nanoowl.prompts)
-    owl_labels: List[str] = None     # OWL labels
+    basename: str  # file base w/o extension
+    image_rel: str  # relative path from ROOT
+    json_rel: Optional[str]  # relative path from ROOT (may be None)
+    mtime: float  # latest mtime among image/json
+    text: str  # extracted caption/answer (best-effort)
+    llm_terms: List[str] = None  # LLM (nanoowl.prompts)
+    owl_labels: List[str] = None  # OWL labels
+
 
 # -----------------
 # Utilities
@@ -86,7 +91,7 @@ class Item:
 
 def _extract_llm_terms(doc: Dict) -> List[str]:
     try:
-        terms = doc.get("nanoowl", {}).get("prompts", [])
+        terms = doc.get("llm_prompts", [])
         if isinstance(terms, list):
             seen = set()
             out = []
@@ -99,6 +104,7 @@ def _extract_llm_terms(doc: Dict) -> List[str]:
     except Exception:
         pass
     return []
+
 
 def _extract_owl_labels(doc: Dict) -> List[str]:
     labels = []
@@ -120,10 +126,22 @@ def _extract_owl_labels(doc: Dict) -> List[str]:
         return []
 
 
-
 def _ann_variant(path: Path) -> Path:
-    """Return <basename>_ann.jpg next to the original image."""
-    return path.with_suffix("").with_name(path.stem + "_ann").with_suffix(".jpg")
+    """Prefer annotated image under a sibling '<parent>_ann' directory.
+       Fallback to '<basename>_ann.jpg' next to the original."""
+    parent = path.parent
+    stem = path.stem
+
+    sibling_ann_dir = parent.with_name(parent.name + "_ann")
+    if sibling_ann_dir.exists() and sibling_ann_dir.is_dir():
+        cand1 = sibling_ann_dir / (stem + "_ann.jpg")
+        if cand1.exists():
+            return cand1
+        cand2 = sibling_ann_dir / path.name
+        if cand2.exists():
+            return cand2
+
+    return path.with_suffix("").with_name(stem + "_ann").with_suffix(".jpg")
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
@@ -137,6 +155,7 @@ def _latest_run_dir(root: Path) -> Optional[Path]:
     except Exception:
         return None
 
+
 def _is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTS
 
@@ -145,6 +164,7 @@ def _best_json_for_image(img_path: Path) -> Optional[Path]:
     """Return JSON that sits next to the image (same basename + .json)."""
     cand = img_path.with_suffix(JSON_EXT)
     return cand if cand.exists() else None
+
 
 def _extract_text(doc: dict) -> str:
     """
@@ -172,10 +192,9 @@ def _extract_text(doc: dict) -> str:
     return "(no textual description found in JSON)"
 
 
-
 def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items: List[Item] = []
-    seen_keys = set()  
+    seen_keys = set()
 
     for img_path in root.glob("**/*"):
         if not img_path.is_file():
@@ -220,7 +239,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
 
         items.append(Item(
             basename=use_path.stem,
-            image_rel=str(use_path.relative_to(rel_root)),                 
+            image_rel=str(use_path.relative_to(rel_root)),
             json_rel=(str(json_path.relative_to(rel_root)) if json_path else None),
             mtime=max(mtime_list),
             text=text,
@@ -231,11 +250,12 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items.sort(key=lambda it: it.mtime, reverse=True)
     return items
 
+
 # -----------------
 # Flask app
 # -----------------
 
-def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_dir: Path) -> Flask:
+def create_app(root_dir: Path, scan_interval: float, latest_only: bool, static_dir: Path) -> Flask:
     app = Flask(__name__)
     app.config["ROOT_DIR"] = root_dir
     app.config["SCAN_INTERVAL"] = scan_interval
@@ -245,8 +265,8 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
     @app.get("/")
     def index():
         return render_template_string(INDEX_HTML,
-            scan_interval=app.config["SCAN_INTERVAL"]
-        )
+                                      scan_interval=app.config["SCAN_INTERVAL"]
+                                      )
 
     @app.get("/api/items")
     def api_items():
@@ -259,7 +279,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
             if last_dir is not None:
                 scan_root = last_dir
                 current_run = str(last_dir.relative_to(root))
-    
+
         items = _collect_items(scan_root, rel_root=root)
         payload = [
             {
@@ -273,7 +293,9 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
             }
             for it in items
         ]
-        return jsonify({"ok": True, "count": len(payload), "items": payload, "root": str(root), "scan_root": str(scan_root), "current_run": current_run})
+        return jsonify(
+            {"ok": True, "count": len(payload), "items": payload, "root": str(root), "scan_root": str(scan_root),
+             "current_run": current_run})
 
     @app.get("/img/<path:rel>")
     def serve_image(rel: str):
@@ -312,6 +334,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
         return send_from_directory(str(full.parent), full.name)
 
     return app
+
 
 # -----------------
 # HTML template (inline)
@@ -366,7 +389,7 @@ INDEX_HTML = r"""
 </head>
 <body>
   <header>
-    <img src="/static/sparks.jpg" alt="Logo" class="logo" />
+    <img src="/static/sparx.jpg" alt="Logo" class="logo" />
     <h1>VLM Ingest Viewer</h1>
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
@@ -492,6 +515,8 @@ INDEX_HTML = r"""
 </body>
 </html>
 """
+
+
 # -----------------
 # Entrypoint
 # -----------------

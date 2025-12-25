@@ -116,11 +116,11 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 display_server_2.py \
-  --root /home/user/jetson-containers/data \
-  --host 0.0.0.0 \
-  --port 8090 \
-  --latest-only
+python3 python3 display_server.py  \
+ --root /home/user/jetson-containers/data/R2  \
+  --host 0.0.0.0   --port 8090  \
+   --latest-only
+
 ```
 
 
@@ -134,35 +134,20 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 comm_manager_2.py \
-  --host 0.0.0.0 \
-  --port 5050 \
-  --jetson2-endpoint http://192.168.131.21:5050/prompts \
-  --captures-root /home/user/jetson-containers/data \
-  --nanoowl-endpoint http://192.168.131.22:5060/infer \
-  --forward-timeout 25 \
-  --forward-retries 7 \
-  --nanoowl-timeout 70 \
-  --nanoowl-annotate 0 \
-  --forward-json-url http://192.168.131.23:9090/ingest
+python3 comm_manager_2.py   \
+--host 0.0.0.0 \
+   --port 5050  \
+    --jetson2-endpoint http://192.168.131.21:5050/prompts    \
+    --captures-root /home/user/jetson-containers/data/R2/ \
+      --nanoowl-endpoint http://192.168.131.22:5060/infer  \ 
+       --forward-timeout 45   --forward-retries 3  \
+        --nanoowl-timeout 70   --nanoowl-annotate 0  
+         --forward-json-url http://192.168.131.23:9090/ingest
+         
+
  ```
 
-## 6. **image_state_subscriber_call_vlm.py**
-first- get in to the jetson:
-
-```
-ssh -X user@192.168.131.22
-```
-**How to Run:**
-```bash
-cd /rqs_iai_ws/src/examples/src
-source /opt/ros/humble/setup.bash
-source ../../../install/setup.bash
-python3 image_state_subscriber_call_vlm.py --out-dir /home/user/Pictures/R2 --vlm http://192.168.131.22:8080/describe
-```
-
-
-## 7. **LLM Object List Extractor**
+## 6. **LLM Object List Extractor**
 
 Connect to Jetson #2:
 ```bash
@@ -180,7 +165,7 @@ curl -s http://192.168.131.21:5050/prompts \
   -d '{"caption":"two black suitcases with red and white labels on the ground"}'
   ```
 
-## 8. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
+## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
 ssh nvidia@192.168.131.23
