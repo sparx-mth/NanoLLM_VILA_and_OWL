@@ -47,7 +47,7 @@ _REL_PREPS   = {
 _VERBS = {
     "standing","sitting","lying","holding","carrying","wearing","looking",
     "using","walking","running","pointing","grabbing","placing","taking",
-    "putting","standing,", "sitting,", "holding,"
+    "putting","standing,", "sitting,", "holding,", "leaning,", "leaning",
 }
 HUMANS = {"man","woman","men","women","people","person","boy","girl"}
 _STOP   = {"room","floor","ground","wall","background","of","area","space"} | _CONJ
@@ -89,7 +89,7 @@ def _a_an(noun: str) -> str:
     return ("an " if noun[:1] in "aeiou" else "a ") + noun
 
 def _singular(w: str) -> str:
-    irr = {"people":"person","men":"man","women":"woman","children":"child","mice":"mouse","bikes":"bicycle", "jeans":"jeans"}
+    irr = {"people":"person","men":"man","women":"woman","children":"child","mice":"mouse","bikes":"bicycle", "jeans":"jeans", "boxes": "box"}
     w = w.strip().lower()
     if w in irr: return irr[w]
     if w.endswith("ies"): return w[:-3]+"y"

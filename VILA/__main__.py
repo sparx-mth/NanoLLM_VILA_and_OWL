@@ -59,6 +59,18 @@ def _http_post_text(url: str, text: str, timeout: float = 6.0) -> tuple[int, str
     except Exception as e:
         return -1, str(e)
 
+# 1. Update the helper to handle JSON
+def _http_post_json_vila(url: str, payload: dict, timeout: float = 45.0):
+    import json
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except Exception as e:
+        return -1, str(e)
+
+
 # ---------------------------
 # Helpers for JSON by image (local only)
 # ---------------------------
@@ -330,7 +342,12 @@ def process_user_prompt(user_prompt: str, *, generate: bool = True) -> str:
 
     # ---- Notify comm-manager (message-only) ----
     if args.notify_url and reply_text.strip():
-        status, body = _http_post_text(args.notify_url.strip(), reply_text.strip(), timeout=10.0)
+        payload = {
+            "caption": reply_text.strip(),
+            "image_name": os.path.basename(last_image_path) if last_image_path else None
+        }
+        status, body = _http_post_json_vila(args.notify_url.strip(), payload, timeout=45.0)
+        # status, body = _http_post_text(args.notify_url.strip(), reply_text.strip(), timeout=10.0)
         if status in (200, 201):
             cprint(f"[notify] sent caption to {args.notify_url} (status {status})", "cyan")
         else:

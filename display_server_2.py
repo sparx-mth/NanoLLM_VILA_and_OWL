@@ -75,7 +75,7 @@ class Item:
     basename: str              # file base w/o extension
     image_rel: str             # relative path from ROOT
     json_rel: Optional[str]    # relative path from ROOT (may be None)
-    mtime: float               # latest mtime among image/json
+    ctime: float               # latest ctime among image/json
     text: str                  # extracted caption/answer (best-effort)
     llm_terms: List[str] = None      #  LLM (nanoowl.prompts)
     owl_labels: List[str] = None     # OWL labels
@@ -86,7 +86,7 @@ class Item:
 
 def _extract_llm_terms(doc: Dict) -> List[str]:
     try:
-        terms = doc.get("nanoowl", {}).get("prompts", [])
+        terms = doc.get("llm_prompts", [])
         if isinstance(terms, list):
             seen = set()
             out = []
@@ -140,12 +140,12 @@ def _ann_variant(path: Path) -> Path:
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
-    """Return newest immediate subdirectory under root (by mtime)."""
+    """Return newest immediate subdirectory under root (by ctime)."""
     try:
         subdirs = [d for d in root.iterdir() if d.is_dir()]
         if not subdirs:
             return None
-        subdirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        subdirs.sort(key=lambda d: d.stat().st_ctime, reverse=True)
         return subdirs[0]
     except Exception:
         return None
@@ -212,11 +212,11 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
         text = ""
         llm_terms: List[str] = []
         owl_labels: List[str] = []
-        mtime_list = [img_path.stat().st_mtime]
+        ctime_list = [img_path.stat().st_ctime]
 
         if ann_path.exists():
             try:
-                mtime_list.append(ann_path.stat().st_mtime)
+                ctime_list.append(ann_path.stat().st_ctime)
             except Exception:
                 pass
 
@@ -227,7 +227,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
                 text = _extract_text(doc)
                 llm_terms = _extract_llm_terms(doc) or []
                 owl_labels = _extract_owl_labels(doc) or []
-                mtime_list.append(json_path.stat().st_mtime)
+                ctime_list.append(json_path.stat().st_ctime)
             except Exception:
                 text = "(failed to read/parse JSON)"
 
@@ -235,13 +235,13 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             basename=use_path.stem,
             image_rel=str(use_path.relative_to(rel_root)),                 
             json_rel=(str(json_path.relative_to(rel_root)) if json_path else None),
-            mtime=max(mtime_list),
+            ctime=max(ctime_list),
             text=text,
             llm_terms=llm_terms,
             owl_labels=owl_labels,
         ))
 
-    items.sort(key=lambda it: it.mtime, reverse=True)
+    items.sort(key=lambda it: it.ctime, reverse=True)
     return items
 
 # -----------------
@@ -279,7 +279,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
                 "basename": it.basename,
                 "image": f"/img/{it.image_rel}",
                 "json": (f"/meta/{it.json_rel}" if it.json_rel else None),
-                "mtime": it.mtime,
+                "ctime": it.ctime,
                 "text": it.text,
                 "llm_terms": it.llm_terms or [],
                 "owl_labels": it.owl_labels or [],
@@ -351,7 +351,7 @@ INDEX_HTML = r"""
     .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:8px; }
     .title { display:flex; align-items:center; gap:8px; justify-content:space-between; }
     .basename { font-size:13px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:70%; }
-    .mtime { font-size:12px; color:#7dd3fc; }
+    .ctime { font-size:12px; color:#7dd3fc; }
     .text { font-size:14px; line-height:1.35; color:#e5e7eb; max-height:72px; overflow:hidden; mask-image: linear-gradient(to bottom, black 70%, transparent 100%); }
     .row { display:flex; gap:8px; align-items:center; }
     .btn { cursor:pointer; border:1px solid #1f2937; background:#0b1325; color:#e2e8f0; padding:8px 10px; border-radius:12px; font-size:13px; }
@@ -437,7 +437,7 @@ INDEX_HTML = r"""
           <div class="body">
             <div class="title">
               <div class="basename" title="${it.basename}">${it.basename}</div>
-              <div class="mtime">${fmtTime(it.mtime)}</div>
+              <div class="ctime">${fmtTime(it.ctime)}</div>
             </div>
 
             ${chipRow('LLM', it.llm_terms)}
@@ -473,7 +473,7 @@ INDEX_HTML = r"""
     async function openModal(serialized){
       const it = JSON.parse(JSON.parse(decodeURIComponent(serialized)));
       document.getElementById('modalImg').src = it.image;
-      document.getElementById('modalTitle').textContent = it.basename + ' — ' + fmtTime(it.mtime);
+      document.getElementById('modalTitle').textContent = it.basename + ' — ' + fmtTime(it.ctime);
 
       // LLM chips + caption (no OWL)
       const llmRow = chipRow('LLM', it.llm_terms || []);
