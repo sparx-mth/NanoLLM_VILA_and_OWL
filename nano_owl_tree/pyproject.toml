@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nano_owl_tree"
+version = "0.1.0"
+description = "Tree-based object detection service using NanoOWL on Jetson Orin"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "pillow",
+    "flask",
+    "flask-cors",
+]
+
+[project.scripts]
+nanoowl-service = "nano_owl_tree.nanoowl_service:main"
+nanoowl-tree-demo = "nano_owl_tree.tree_demo:main"
+
+[tool.setuptools]
+packages = ["nano_owl_tree"]

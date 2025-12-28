@@ -216,6 +216,7 @@ def main():
     ap.add_argument("--min-score", type=float, default=MIN_SCORE)
     ap.add_argument("--nms-iou", type=float, default=NMS_IOU)
     ap.add_argument("--jpeg-quality", type=int, default=JPEG_QUALITY)
+    ap.add_argument("--debug", action="store_true", default=False)
     args = ap.parse_args()
 
     MIN_SCORE = args.min_score
@@ -227,7 +228,7 @@ def main():
     predictor = TreePredictor(owl_predictor=OwlPredictor(image_encoder_engine=args.engine))
     print(f"NanoOWL ready in {time.perf_counter()-t0:.2f}s")
 
-    app.run(host=args.host, port=args.port, debug=False)
+    app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=args.debug)
 
 if __name__ == "__main__":
     main()
