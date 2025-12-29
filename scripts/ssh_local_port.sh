@@ -9,7 +9,8 @@ fi
 
 port_num="60${dsi_num}"
 dsi_name="192.168.131.${dsi_num}"
+remote_port_num="2222"
 
-echo "Map port ${port_num} to ${dsi_name}:22"
+echo "Map port ${port_num} to ${dsi_name}:${remote_port_num}"
 
-ssh -L "${port_num}:${dsi_name}:22" "user@localhost:8080"
+ssh -L "${port_num}:${dsi_name}:${remote_port_num}" "user@${dsi_name}"

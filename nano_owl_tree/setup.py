@@ -9,8 +9,9 @@ setup(
         "pillow",
         "flask",
         "flask-cors",
+        "psycopg2-binary",
     ],
-    author="AI Assistant",
+    author="TheAgency@SPARX",
     description="A project for tree-based object detection using NanoOwl on Jetson Orin",
     python_requires=">=3.10",
     entry_points={

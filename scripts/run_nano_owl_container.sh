@@ -15,4 +15,12 @@ docker run -d --name $CONTAINER_NAME \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
   $IMAGE_NAME \
-  /bin/bash -c "pip3 install -e /app/nano_owl_tree/nano_owl_tree/ && nanoowl-service --engine /opt/nanoowl/data/owl_image_encoder_patch32.engine"
+  /bin/bash -c "pip3 install --force-reinstall flask flask-cors && \
+    pip3 install --ignore-installed -e /app/nano_owl_tree/ && \
+    nanoowl-service \
+    --engine /opt/nanoowl/data/owl_image_encoder_patch32.engine \
+    --host 0.0.0.0 --port 5060 --min-score 0.2"
+
+    #cd /app/nano_owl_tree/nano_owl_tree && \
+    #    python3 -m venv venv && \
+    #    source venv/bin/activate && \
