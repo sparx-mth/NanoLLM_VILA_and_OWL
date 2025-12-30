@@ -273,7 +273,8 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
         if latest_only:
             last_dir = _latest_run_dir(root)
             if last_dir is not None:
-                scan_root = last_dir
+                assert last_dir.is_symlink(), f"Latest run directory {last_dir} is not a symlink!"
+                scan_root = last_dir.resolve()
                 current_run = str(last_dir.relative_to(root))
         print(f"[server] Scanning directory: {scan_root}")
 

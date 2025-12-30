@@ -208,15 +208,6 @@ def _ann_outpath_for_image(image_path: str) -> str:
     run_name = str(run_name_path.resolve().name)
     ann_dir = os.path.join(parent_dir, f"{run_name}_ann")      # e.g. .../captures/2025_10_19___15_53_28_ann
     os.makedirs(ann_dir, exist_ok=True)
-
-    # Update 'latest' symbolic link
-    latest_ann_link = os.path.join(parent_dir, "latest_ann")
-    try:
-        if os.path.lexists(latest_ann_link):
-            os.remove(latest_ann_link)
-        os.symlink(ann_dir, latest_ann_link)
-    except Exception as e:
-        print(f"Failed to create symlink {latest_ann_link}: {e}")
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     base_name = re.sub(r"_ann$", "", base_name, flags=re.IGNORECASE)
     out_name = f"{base_name}_ann.jpg"
