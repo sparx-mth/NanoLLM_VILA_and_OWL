@@ -116,7 +116,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 python3 display_server.py  \
+python3 display_server.py  \
  --root /home/user/jetson-containers/data/R2  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
@@ -137,12 +137,11 @@ cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 comm_manager_2.py   \
 --host 0.0.0.0 \
    --port 5050  \
-    --jetson2-endpoint http://192.168.131.21:5050/prompts    \
-    --captures-root /home/user/jetson-containers/data/R2/ \
-      --nanoowl-endpoint http://192.168.131.22:5060/infer  \ 
-       --forward-timeout 45   --forward-retries 3  \
-        --nanoowl-timeout 70   --nanoowl-annotate 0  
-         --forward-json-url http://192.168.131.23:9090/ingest
+   --jetson2-endpoint http://192.168.131.21:5050/prompts    \
+   --captures-root /home/user/jetson-containers/data/R2/ \
+   --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3  \
+   --nanoowl-timeout 70   --nanoowl-annotate 0  \
+   --forward-json-url http://192.168.131.23:9090/ingest
          
 
  ```

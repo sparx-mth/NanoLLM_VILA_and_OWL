@@ -208,6 +208,27 @@ class ImageStateBuffer(Node):
         img_basename = os.path.basename(jpg_path)
 
         os.makedirs(self.out_dir, exist_ok=True)
+        # Update 'latest' symbolic link
+        latest_link = os.path.join(self.base_dir, "latest")
+        latest_ann_link = os.path.join(self.base_dir, "latest_ann")
+        try:
+            if os.path.lexists(latest_ann_link):
+                os.remove(latest_ann_link)
+            if os.path.lexists(latest_link):
+                os.remove(latest_link)
+            os.symlink(self.out_dir, latest_link)
+        except Exception as e:
+            self.get_logger().error(f"Failed to create symlink {latest_link}: {e}")
+
+
+        self.save_image_to_dir(cv_img, jpg_path)
+
+        # First create/update JSON with pose and image name
+        _update_sidecar_json(json_path, pose, img_basename, vlm_text=None)
+        self._last_img_stamp = stamp_tup
+        self._same_frame_hits = 0
+
+    def save_image_to_dir(self, cv_img, jpg_path: str):
         import cv2
         try:
             # txt = f"t={stamp.sec}.{stamp.nanosec:09d}"
@@ -217,13 +238,6 @@ class ImageStateBuffer(Node):
         except Exception as e:
             msg = f"Failed to save image {jpg_path}: {e}"
             self.get_logger().error(msg)
-
-        # First create/update JSON with pose and image name
-        _update_sidecar_json(json_path, pose, img_basename, vlm_text=None)
-        self._last_img_stamp = stamp_tup
-        self._same_frame_hits = 0
-
-
 
     # ------------------------------------------------------------------
     # Cleanup (Subscriptions are destroyed in destroy_node, which is fine)

@@ -101,47 +101,27 @@ def _find_latest_image_and_json(root_dir: str):
         print("Failed #1")
         return None, None
 
-    patterns = ["**/*"]
-    latest_folder = None
-    latest_mtime = -1.0
-
     root_path = Path(root_dir)
     assert root_path.exists(), f"{root_dir} does not exist"
-    for fp in root_path.iterdir():
-        if not fp.is_dir():
-            continue
-
-        if _ANN_RE.search(str(fp)):
-            continue
-        if _is_in_ann_folder(str(fp)):
-            continue
-        try:
-            mtime = os.path.getctime(fp)
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-                latest_folder = fp
-        except Exception as exp:
-            print(f"Failed #2 {exp}")
-    if not latest_folder:
-        print(f"Folder not found")
+    latest_folder_path = root_path / "latest"
+    if not latest_folder_path.exists():
         return None, None
+    assert latest_folder_path.is_dir(), f"{latest_folder_path} is not a dir"
+    latest_folder = str(latest_folder_path)
 
-    patterns = ["**/*.jpg", "**/*.jpeg", "**/*.png"]
     latest_img = None
     latest_mtime = -1.0
     print(f"latest folder: {latest_folder}")
 
-    latest_folder_path = Path(latest_folder)
-    assert latest_folder_path.is_dir(), f"{latest_folder_path} does not exist or is not a dir"
     for fp in latest_folder_path.iterdir():
         if not fp.is_file() or fp.suffix not in [".jpg", ".jpeg", ".png"]:
             continue
         print(f"Processing {fp}")
 
         try:
-            mtime = os.path.getctime(fp)
-            if mtime > latest_mtime:
-                latest_mtime = mtime
+            ctime = os.path.getctime(fp)
+            if ctime > latest_mtime:
+                latest_mtime = ctime
                 latest_img = fp
         except Exception as exp:
             print(f"Failed #3 {exp}")
@@ -222,11 +202,21 @@ def _ann_outpath_for_image(image_path: str) -> str:
     """
     base_dir = os.path.dirname(image_path)                     # e.g. .../captures/2025_10_19___15_53_28
     parent_dir = os.path.dirname(base_dir)                     # e.g. .../captures
-    run_name = os.path.basename(base_dir)                      # e.g. 2025_10_19___15_53_28
 
+    run_name_path = Path(base_dir)# e.g. 2025_10_19___15_53_28
+    assert run_name_path.is_symlink(), f"Expected symlink {run_name_path} to point to a run folder"
+    run_name = str(run_name_path.resolve().name)
     ann_dir = os.path.join(parent_dir, f"{run_name}_ann")      # e.g. .../captures/2025_10_19___15_53_28_ann
     os.makedirs(ann_dir, exist_ok=True)
 
+    # Update 'latest' symbolic link
+    latest_ann_link = os.path.join(parent_dir, "latest_ann")
+    try:
+        if os.path.lexists(latest_ann_link):
+            os.remove(latest_ann_link)
+        os.symlink(ann_dir, latest_ann_link)
+    except Exception as e:
+        print(f"Failed to create symlink {latest_ann_link}: {e}")
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     base_name = re.sub(r"_ann$", "", base_name, flags=re.IGNORECASE)
     out_name = f"{base_name}_ann.jpg"

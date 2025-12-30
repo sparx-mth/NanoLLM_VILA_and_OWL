@@ -217,6 +217,18 @@ def process_folder(
     new_folder_path = Path(new_folder)
     new_folder_path.mkdir(parents=True, exist_ok=True)
 
+    folder_path = Path(folder)
+    assert folder_path.is_symlink(), f"{folder_path} is not a symlink"
+    folder = folder_path.resolve()
+
+    latest_link = new_folder_path.parent / "latest"
+    try:
+        if os.path.lexists(latest_link):
+            os.remove(latest_link)
+        os.symlink(new_folder_path, latest_link)
+    except Exception as e:
+        print(f"Failed to create symlink {latest_link}: {e}")
+
     for jpg in jpgs:
         jpg_path = Path(folder) / jpg
         shutil.copy(jpg_path, Path(new_folder))
@@ -320,16 +332,18 @@ def main():
         sys.exit(2)
 
     def run_once():
-        latest = Path(pick_latest_subdir(args.base_dir, args.latest_by))
+
+        latest = Path(args.base_dir) / "latest"
+
         parent= latest.parent
         new_folder_name = datetime.datetime.now().strftime("%Y_%m_%d___%H_%M_%S")
-        new_file_path = Path(parent / new_folder_name)
+        new_folder_path = Path(parent / new_folder_name)
 
 
         log(f"[worker] Latest folder: {latest}")
         done, skipped, failed = process_folder(
             folder=latest.as_posix(),
-            new_folder=new_file_path.as_posix(),
+            new_folder=new_folder_path.as_posix(),
             endpoint=args.endpoint,
             path_src=args.path_src,
             path_dst=args.path_dst,
