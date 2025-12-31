@@ -7,7 +7,7 @@
 * **Environment:** Run `source ~/rqs_iai_ws/src/ros2_env.sh` on all machines/containers before starting.
 
 ## Architecture diagram
-![System diagram](demo_with_main.drawio.png)
+![System diagram](demo_with_main_comm.drawio.png)
 
 ---
 

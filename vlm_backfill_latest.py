@@ -12,6 +12,8 @@ from typing import Optional, Tuple
 
 import requests
 
+from comm_manager_2 import update_cb
+
 
 @dataclass
 class VlmResult:
@@ -192,6 +194,10 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
     return VlmResult(ok=False, caption=None, error=last_err)
 
 
+def villa_response_callback(caption):
+    process_folder.villa_response = caption
+    print(" ============================ Got villa response ========================", process_folder.villa_response)
+
 def process_folder(
     folder: str,
     new_folder: str,
@@ -204,6 +210,10 @@ def process_folder(
     force: bool,
     sleep_between_s: float,
 ) -> Tuple[int, int, int]:
+    if not hasattr(process_folder, "villa_response"):
+       process_folder.villa_response=None
+       update_cb(villa_response_callback)
+
     jpgs = sorted([
         f for f in os.listdir(folder)
         if f.lower().endswith(".jpg") and not f.lower().endswith("_ann.jpg")
@@ -279,23 +289,6 @@ def process_folder(
                 "prompt": prompt,
                 "response": response,
             })
-
-        # # Optional: keep status block (handy for debugging)
-        # js["vlm"] = {
-        #     "status": "done" if res.ok else "failed",
-        #     "endpoint": endpoint,
-        #     "image_path_sent": img_for_vlm,
-        #     "took_s": round(dt, 3),
-        #     "error": None if res.ok else res.error,
-        #     "updated_at_unix": time.time(),
-        # }
-        #
-        # # Optional: remove/stop using vlm_text to avoid confusion
-        # if "vlm_text" in js:
-        #     js.pop("vlm_text", None)
-        #
-        # save_json(str(json_path), js)
-
         if res.ok:
             done += 1
         else:
