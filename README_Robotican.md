@@ -230,7 +230,29 @@ http://192.168.131.22:8090/
 
 http://192.168.131.23:8080/
 
+---
 
+## F) Mission Control (New)
+We have added a central dashboard to manage all the above services from your laptop.
 
+### 1. Laptop Setup
+```bash
+cd mission_control
+./start_mission_control.sh
+```
+Open [http://localhost:5000](http://localhost:5000)
 
+### 2. Jetson Setup (Run once on each Jetson)
+```bash
+# On AGX1
+cd GIT/NanoLLM_VILA_and_OWL/mission_control
+./install_agent.sh --port 6000
 
+# On Nano
+cd GIT/NanoLLM_VILA_and_OWL/mission_control
+./install_agent.sh --port 6000
+
+# On AGX2
+cd GIT/NanoLLM_VILA_and_OWL/mission_control
+./install_agent.sh --port 6000
+```

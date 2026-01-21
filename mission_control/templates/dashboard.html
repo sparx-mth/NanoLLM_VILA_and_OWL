@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robotican Mission Control</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --surface: #1e1e1e;
+            --primary: #bb86fc;
+            --secondary: #03dac6;
+            --error: #cf6679;
+            --on-bg: #ffffff;
+            --on-surface: #e0e0e0;
+            --success: #4caf50;
+        }
+        body {
+            background-color: var(--bg);
+            color: var(--on-bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { margin-bottom: 20px; text-align: center; color: var(--primary); }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background-color: var(--surface);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            border: 1px solid #333;
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-2px); }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+        }
+        .node-badge {
+            font-size: 0.8em;
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #aaa;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #555;
+            margin-right: 8px;
+        }
+        .status-running { background-color: var(--success); box-shadow: 0 0 8px var(--success); }
+        .status-stopped { background-color: var(--error); }
+        .status-offline { background-color: #555; border: 1px solid #777; }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        button {
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-start { background-color: var(--success); color: white; }
+        .btn-stop { background-color: var(--error); color: white; }
+        .btn-logs { background-color: #333; color: var(--secondary); border: 1px solid var(--secondary); }
+        
+        .desc { font-size: 0.9em; color: #aaa; min-height: 40px; }
+        
+        /* Modal for Logs */
+        .modal {
+            display: none; 
+            position: fixed; 
+            z-index: 100; 
+            left: 0; top: 0; width: 100%; height: 100%; 
+            background-color: rgba(0,0,0,0.8);
+        }
+        .modal-content {
+            background-color: var(--surface);
+            margin: 5% auto;
+            padding: 20px;
+            width: 80%;
+            height: 80%;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+        }
+        .log-display {
+            flex-grow: 1;
+            background: #000;
+            color: #0f0;
+            font-family: monospace;
+            padding: 10px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 0.9em;
+            border: 1px solid #444;
+        }
+        .close-btn {
+            align-self: flex-end;
+            margin-bottom: 10px;
+            background: transparent;
+            color: white;
+            font-size: 1.5em;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Mission Control</h1>
+    
+    <div class="grid" id="service-grid">
+        {% for service in config.services %}
+        <div class="card" id="card-{{ service.id }}">
+            <div class="card-header">
+                <strong>{{ service.id }}</strong>
+                <span class="node-badge">{{ service.node }}</span>
+            </div>
+            <div class="desc">{{ service.description }}</div>
+            <div style="margin-top: 10px;">
+                <span class="status-indicator status-offline" id="indic-{{ service.id }}"></span>
+                <span id="status-text-{{ service.id }}">Unknown</span>
+            </div>
+            <div class="controls">
+                <button class="btn-start" onclick="control('{{ service.id }}', 'start')">START</button>
+                <button class="btn-stop" onclick="control('{{ service.id }}', 'stop')">STOP</button>
+                <button class="btn-logs" onclick="showLogs('{{ service.id }}')">Logs</button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Log Modal -->
+    <div id="logModal" class="modal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeLogs()">&times;</button>
+            <h3 id="logTitle">Logs</h3>
+            <div class="log-display" id="logContent">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        function updateStatus() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(data => {
+                    data.services.forEach(s => {
+                        const indic = document.getElementById(`indic-${s.id}`);
+                        const text = document.getElementById(`status-text-${s.id}`);
+                        
+                        indic.className = 'status-indicator'; // reset
+                        if (s.state === 'running') {
+                            indic.classList.add('status-running');
+                            text.innerText = `Running (PID ${s.metadata.pid})`;
+                        } else if (s.state === 'stopped') {
+                            indic.classList.add('status-stopped');
+                            text.innerText = 'Stopped';
+                            if (s.metadata.exit_code !== undefined) {
+                                text.innerText += ` (Code ${s.metadata.exit_code})`;
+                            }
+                        } else {
+                            indic.classList.add('status-offline');
+                            text.innerText = s.message || 'Offline';
+                        }
+                    });
+                });
+        }
+
+        function control(id, action) {
+            fetch(`/api/control/${id}/${action}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(res => {
+                    if (!res.ok) alert("Error: " + res.error);
+                    updateStatus();
+                })
+                .catch(e => alert("Network Error"));
+        }
+
+        let logInterval = null;
+        let currentLogId = null;
+
+        function showLogs(id) {
+            currentLogId = id;
+            document.getElementById('logModal').style.display = 'block';
+            document.getElementById('logTitle').innerText = `Logs: ${id}`;
+            fetchLogs();
+            logInterval = setInterval(fetchLogs, 2000);
+        }
+
+        function fetchLogs() {
+            if(!currentLogId) return;
+            fetch(`/api/logs/${currentLogId}`)
+                .then(r => r.json())
+                .then(data => {
+                    const el = document.getElementById('logContent');
+                    el.innerText = data.lines.join('');
+                    el.scrollTop = el.scrollHeight;
+                });
+        }
+
+        function closeLogs() {
+            document.getElementById('logModal').style.display = 'none';
+            clearInterval(logInterval);
+            currentLogId = null;
+        }
+
+        // Poll every 2 seconds
+        setInterval(updateStatus, 2000);
+        updateStatus(); // Initial call
+        
+        // Close modal on outside click
+        window.onclick = function(event) {
+            if (event.target == document.getElementById('logModal')) {
+                closeLogs();
+            }
+        }
+    </script>
+</body>
+</html>
