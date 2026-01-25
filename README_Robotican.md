@@ -102,6 +102,12 @@ first- get in to the jetson:
 ssh -X user@192.168.131.22
 ```
 **Run:**
+### make sure there is a folder (link to folder) called latest before first run
+
+```bash 
+ln -s "path/your/folder/" "latest" 
+```
+
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server_2.py  \
