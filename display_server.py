@@ -86,7 +86,7 @@ class Item:
 
 def _extract_llm_terms(doc: Dict) -> List[str]:
     try:
-        terms = doc.get("nanoowl", {}).get("prompts", [])
+        terms = doc.get("llm_prompts", [])
         if isinstance(terms, list):
             seen = set()
             out = []
@@ -122,8 +122,21 @@ def _extract_owl_labels(doc: Dict) -> List[str]:
 
 
 def _ann_variant(path: Path) -> Path:
-    """Return <basename>_ann.jpg next to the original image."""
-    return path.with_suffix("").with_name(path.stem + "_ann").with_suffix(".jpg")
+    """Prefer annotated image under a sibling '<parent>_ann' directory.
+       Fallback to '<basename>_ann.jpg' next to the original."""
+    parent = path.parent
+    stem = path.stem
+
+    sibling_ann_dir = parent.with_name(parent.name + "_ann")
+    if sibling_ann_dir.exists() and sibling_ann_dir.is_dir():
+        cand1 = sibling_ann_dir / (stem + "_ann.jpg")
+        if cand1.exists():
+            return cand1
+        cand2 = sibling_ann_dir / path.name
+        if cand2.exists():
+            return cand2
+
+    return path.with_suffix("").with_name(stem + "_ann").with_suffix(".jpg")
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
@@ -366,7 +379,7 @@ INDEX_HTML = r"""
 </head>
 <body>
   <header>
-    <img src="/static/sparks.jpg" alt="Logo" class="logo" />
+    <img src="/static/sparx.jpg" alt="Logo" class="logo" />
     <h1>VLM Ingest Viewer</h1>
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">

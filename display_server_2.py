@@ -75,7 +75,7 @@ class Item:
     basename: str              # file base w/o extension
     image_rel: str             # relative path from ROOT
     json_rel: Optional[str]    # relative path from ROOT (may be None)
-    mtime: float               # latest mtime among image/json
+    ctime: float               # latest ctime among image/json
     text: str                  # extracted caption/answer (best-effort)
     llm_terms: List[str] = None      #  LLM (nanoowl.prompts)
     owl_labels: List[str] = None     # OWL labels
@@ -140,12 +140,14 @@ def _ann_variant(path: Path) -> Path:
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
-    """Return newest immediate subdirectory under root (by mtime)."""
+    latest = root / "latest"
+    return latest if latest.exists() and latest.is_dir() else None
+    """Return newest immediate subdirectory under root (by ctime)."""
     try:
         subdirs = [d for d in root.iterdir() if d.is_dir()]
         if not subdirs:
             return None
-        subdirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        subdirs.sort(key=lambda d: d.stat().st_ctime, reverse=True)
         return subdirs[0]
     except Exception:
         return None
@@ -189,7 +191,8 @@ def _extract_text(doc: dict) -> str:
 def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items: List[Item] = []
     seen_keys = set()  
-
+    imgs_list = [p for p in root.glob("**/*")]
+    print(f"[_collect_items] images list: {imgs_list}")
     for img_path in root.glob("**/*"):
         if not img_path.is_file():
             continue
@@ -198,7 +201,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
 
         if img_path.stem.endswith("_ann"):
             continue
-
+        print(f"[_collect_items] Found image: {img_path}")
         ann_path = _ann_variant(img_path)
         use_path = ann_path if ann_path.exists() else img_path
 
@@ -212,11 +215,11 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
         text = ""
         llm_terms: List[str] = []
         owl_labels: List[str] = []
-        mtime_list = [img_path.stat().st_mtime]
+        ctime_list = [img_path.stat().st_ctime]
 
         if ann_path.exists():
             try:
-                mtime_list.append(ann_path.stat().st_mtime)
+                ctime_list.append(ann_path.stat().st_ctime)
             except Exception:
                 pass
 
@@ -227,7 +230,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
                 text = _extract_text(doc)
                 llm_terms = _extract_llm_terms(doc) or []
                 owl_labels = _extract_owl_labels(doc) or []
-                mtime_list.append(json_path.stat().st_mtime)
+                ctime_list.append(json_path.stat().st_ctime)
             except Exception:
                 text = "(failed to read/parse JSON)"
 
@@ -235,13 +238,13 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             basename=use_path.stem,
             image_rel=str(use_path.relative_to(rel_root)),                 
             json_rel=(str(json_path.relative_to(rel_root)) if json_path else None),
-            mtime=max(mtime_list),
+            ctime=max(ctime_list),
             text=text,
             llm_terms=llm_terms,
             owl_labels=owl_labels,
         ))
 
-    items.sort(key=lambda it: it.mtime, reverse=True)
+    items.sort(key=lambda it: it.ctime, reverse=True)
     return items
 
 # -----------------
@@ -270,16 +273,19 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
         if latest_only:
             last_dir = _latest_run_dir(root)
             if last_dir is not None:
-                scan_root = last_dir
+                assert last_dir.is_symlink(), f"Latest run directory {last_dir} is not a symlink!"
+                scan_root = last_dir.resolve()
                 current_run = str(last_dir.relative_to(root))
-    
+        print(f"[server] Scanning directory: {scan_root}")
+
         items = _collect_items(scan_root, rel_root=root)
+        print(f"[server] Found {len(items)} items")
         payload = [
             {
                 "basename": it.basename,
                 "image": f"/img/{it.image_rel}",
                 "json": (f"/meta/{it.json_rel}" if it.json_rel else None),
-                "mtime": it.mtime,
+                "ctime": it.ctime,
                 "text": it.text,
                 "llm_terms": it.llm_terms or [],
                 "owl_labels": it.owl_labels or [],
@@ -296,6 +302,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
             abort(403)
         if not full.exists() or not full.is_file():
             abort(404)
+        print(f"[server] Serving image: {full}")
         directory = str(full.parent)
         filename = full.name
         return send_from_directory(directory, filename)
@@ -351,7 +358,7 @@ INDEX_HTML = r"""
     .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:8px; }
     .title { display:flex; align-items:center; gap:8px; justify-content:space-between; }
     .basename { font-size:13px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:70%; }
-    .mtime { font-size:12px; color:#7dd3fc; }
+    .ctime { font-size:12px; color:#7dd3fc; }
     .text { font-size:14px; line-height:1.35; color:#e5e7eb; max-height:72px; overflow:hidden; mask-image: linear-gradient(to bottom, black 70%, transparent 100%); }
     .row { display:flex; gap:8px; align-items:center; }
     .btn { cursor:pointer; border:1px solid #1f2937; background:#0b1325; color:#e2e8f0; padding:8px 10px; border-radius:12px; font-size:13px; }
@@ -379,7 +386,7 @@ INDEX_HTML = r"""
 </head>
 <body>
   <header>
-    <img src="/static/sparx.jpg" alt="Logo" class="logo" />
+    <img src="/static/sparx_logo.png" alt="Logo" class="logo" />
     <h1>VLM Ingest Viewer</h1>
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
@@ -437,7 +444,7 @@ INDEX_HTML = r"""
           <div class="body">
             <div class="title">
               <div class="basename" title="${it.basename}">${it.basename}</div>
-              <div class="mtime">${fmtTime(it.mtime)}</div>
+              <div class="ctime">${fmtTime(it.ctime)}</div>
             </div>
 
             ${chipRow('LLM', it.llm_terms)}
@@ -473,7 +480,7 @@ INDEX_HTML = r"""
     async function openModal(serialized){
       const it = JSON.parse(JSON.parse(decodeURIComponent(serialized)));
       document.getElementById('modalImg').src = it.image;
-      document.getElementById('modalTitle').textContent = it.basename + ' — ' + fmtTime(it.mtime);
+      document.getElementById('modalTitle').textContent = it.basename + ' — ' + fmtTime(it.ctime);
 
       // LLM chips + caption (no OWL)
       const llmRow = chipRow('LLM', it.llm_terms || []);
