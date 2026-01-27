@@ -1,7 +1,7 @@
 # Drone → ROS2 → VLM Pipeline: Integrated Guide
 
 ## 0. Pre-Flight Checklist
-* **Hardware:** Drone (Preferably R2) powered ON.
+* **Hardware:** Drone (Preferably R1) powered ON.
 * **Power:** Ensure drone battery is charged.
 * **Connectivity:** COMM Unit ON and connected.
 * **Environment:** Run `source ~/rqs_iai_ws/src/ros2_env.sh` on all machines/containers before starting.
@@ -80,7 +80,8 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 comm_manager.py   --host 0.0.0.0    --port 5050      --jetson2-endpoint http://192.168.131.21:5050/prompts    --captures-root /home/user/jetson-containers/data/R2/ --nanoowl-endpoint http://192.168.131.22:5060/infer   --forward-timeout 45   --forward-retries 3   --nanoowl-timeout 70   --nanoowl-annotate 0  --forward-json-url http://192.168.131.23:9090/ingest
+python3 comm_manager_2.py   --host 0.0.0.0    --port 5050      --jetson2-endpoint http://192.168.131.21:5050/prompts    --captures-root /home/user/jetson-containers/data/R1/ --nanoowl-endpoint http://192.168.131.22:5060/infer   --forward-timeout 45   --forward-retries 3   --nanoowl-timeout 70   --nanoowl-annotate 0  --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe --force
+
          
  ```
 
@@ -91,7 +92,7 @@ ssh user@192.168.131.22
 ```bash
 source ~/rqs_iai_ws/src/ros2_env.sh
 cd ~/rqs_iai_ws/src/examples/src
-python3 image_azimuth_subscriber.py --out-dir /home/user/jetson-containers/data/R2
+python3 image_azimuth_subscriber.py --out-dir /home/user/jetson-containers/data/R1
 ```
 
 ### 5. Display Server (Web GUI)
@@ -101,10 +102,16 @@ first- get in to the jetson:
 ssh -X user@192.168.131.22
 ```
 **Run:**
+### make sure there is a folder (link to folder) called latest before first run
+
+```bash 
+ln -s "path/your/folder/" "latest" 
+```
+
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 display_server.py  \
- --root /home/user/jetson-containers/data/R2  \
+python3 display_server_2.py  \
+ --root /home/user/jetson-containers/data/R1  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
 
@@ -180,8 +187,8 @@ source src/./ros2_env.sh
 
 ```bash
 ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/R2/camera/image_raw \
-  -r camera_info:=/R2/camera/camera_info \
+  -r image_rect:=/R1/camera/image_raw \
+  -r camera_info:=/R1/camera/camera_info \
   -p family:=36h11 \
   -p size:=2.00 \
   -p publish_tf:=true \
@@ -209,7 +216,7 @@ python3 main_run_path_and_capture.py --path txt/roll_custom_path.txt
 ssh -X user@192.168.131.22
 source ~/rqs_iai_ws/src/ros2_env.sh
 cd ~/rqs_iai_ws/src/examples/src
-python3 vlm_backfill_latest.py   --base-dir /home/user/jetson-containers/data/R2   --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --timeout 60
+python3 vlm_backfill_latest.py   --base-dir /home/user/jetson-containers/data/R1   --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --timeout 60
 
 ```
 
@@ -221,7 +228,7 @@ Run on AGX1:
 ssh -X user@192.168.131.22
 source ~/rqs_iai_ws/src/ros2_env.sh
 cd ~/rqs_iai_ws/src/examples/src
-python3 vlm_backfill_latest.py   --base-dir /home/user/jetson-containers/data/R2   --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --timeout 60
+python3 vlm_backfill_latest.py   --base-dir /home/user/jetson-containers/data/R1   --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --timeout 60
 
 ```
 ## you can see the results here:
@@ -230,29 +237,7 @@ http://192.168.131.22:8090/
 
 http://192.168.131.23:8080/
 
----
 
-## F) Mission Control (New)
-We have added a central dashboard to manage all the above services from your laptop.
 
-### 1. Laptop Setup
-```bash
-cd mission_control
-./start_mission_control.sh
-```
-Open [http://localhost:5000](http://localhost:5000)
 
-### 2. Jetson Setup (Run once on each Jetson)
-```bash
-# On AGX1
-cd GIT/NanoLLM_VILA_and_OWL/mission_control
-./install_agent.sh --port 6000
 
-# On Nano
-cd GIT/NanoLLM_VILA_and_OWL/mission_control
-./install_agent.sh --port 6000
-
-# On AGX2
-cd GIT/NanoLLM_VILA_and_OWL/mission_control
-./install_agent.sh --port 6000
-```
