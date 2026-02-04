@@ -152,10 +152,19 @@ Connect to Jetson #2:
 ```bash
 ssh user@192.168.131.21
 ```
+in terminal 1:
+```bash
+docker run --rm -it \
+  --runtime nvidia \
+  --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm_llama_3b:latest
+```
+
 in terminal 2:
 ```bash
 cd GIT/NanoLLM_VILA_and_OWL/LLM
-gunicorn -w 1 -k gthread --threads 8 --timeout 120 -b 0.0.0.0:5050 prompt_converter_llm_v2:app
+python3 prompt_converter_vllm.py
 ```
 test 
 ```bash

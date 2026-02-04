@@ -21,8 +21,20 @@ Notes:
     * Jetson2 (/prompts) for prompts
     * NanoOWL (/infer) for detections
 - It stores OWL results locally in the image's JSON and renders an annotated image.
-"""
 
+
+run command both process folder and comm original
+python3 comm_manager_2.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint http://192.168.131.21:5050/prompts       --captures-root /home/user/jetson-containers/data/R2/    --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --vlm-timeout 60
+
+"""
+import datetime
+import queue
+import signal
+import sys
+import threading
+from collections.abc import Callable
+
+from typing import Optional, Tuple
 from flask import Flask, request, jsonify
 from pathlib import Path
 import os
@@ -38,6 +50,11 @@ import urllib.request, urllib.error  # for Jetson2 JSON POST
 import requests                      # for NanoOWL multipart
 import cv2                           # for drawing boxes
 
+from utils_pipeline import log, load_json, already_captioned, extract_prompt_response, remap_path, \
+    parse_caption_from_response, VlmResult
+
+shutdown_event = threading.Event()
+vlm_caption_queue = queue.Queue()
 app = Flask(__name__)
 
 # --- Runtime configuration (populated from CLI args) ---
@@ -68,6 +85,7 @@ LAST = {
 }
 
 # -------------------- Helpers --------------------
+
 
 
 def _http_post_json(url: str, payload: dict, timeout: float = 6.0):
@@ -101,47 +119,27 @@ def _find_latest_image_and_json(root_dir: str):
         print("Failed #1")
         return None, None
 
-    patterns = ["**/*"]
-    latest_folder = None
-    latest_mtime = -1.0
-
     root_path = Path(root_dir)
     assert root_path.exists(), f"{root_dir} does not exist"
-    for fp in root_path.iterdir():
-        if not fp.is_dir():
-            continue
-
-        if _ANN_RE.search(str(fp)):
-            continue
-        if _is_in_ann_folder(str(fp)):
-            continue
-        try:
-            mtime = os.path.getctime(fp)
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-                latest_folder = fp
-        except Exception as exp:
-            print(f"Failed #2 {exp}")
-    if not latest_folder:
-        print(f"Folder not found")
+    latest_folder_path = root_path / "latest"
+    if not latest_folder_path.exists():
         return None, None
+    assert latest_folder_path.is_dir(), f"{latest_folder_path} is not a dir"
+    latest_folder = str(latest_folder_path)
 
-    patterns = ["**/*.jpg", "**/*.jpeg", "**/*.png"]
     latest_img = None
     latest_mtime = -1.0
     print(f"latest folder: {latest_folder}")
 
-    latest_folder_path = Path(latest_folder)
-    assert latest_folder_path.is_dir(), f"{latest_folder_path} does not exist or is not a dir"
     for fp in latest_folder_path.iterdir():
         if not fp.is_file() or fp.suffix not in [".jpg", ".jpeg", ".png"]:
             continue
         print(f"Processing {fp}")
 
         try:
-            mtime = os.path.getctime(fp)
-            if mtime > latest_mtime:
-                latest_mtime = mtime
+            ctime = os.path.getctime(fp)
+            if ctime > latest_mtime:
+                latest_mtime = ctime
                 latest_img = fp
         except Exception as exp:
             print(f"Failed #3 {exp}")
@@ -222,11 +220,12 @@ def _ann_outpath_for_image(image_path: str) -> str:
     """
     base_dir = os.path.dirname(image_path)                     # e.g. .../captures/2025_10_19___15_53_28
     parent_dir = os.path.dirname(base_dir)                     # e.g. .../captures
-    run_name = os.path.basename(base_dir)                      # e.g. 2025_10_19___15_53_28
 
+    run_name_path = Path(base_dir)# e.g. 2025_10_19___15_53_28
+    assert run_name_path.is_symlink(), f"Expected symlink {run_name_path} to point to a run folder"
+    run_name = str(run_name_path.resolve().name)
     ann_dir = os.path.join(parent_dir, f"{run_name}_ann")      # e.g. .../captures/2025_10_19___15_53_28_ann
     os.makedirs(ann_dir, exist_ok=True)
-
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     base_name = re.sub(r"_ann$", "", base_name, flags=re.IGNORECASE)
     out_name = f"{base_name}_ann.jpg"
@@ -435,7 +434,172 @@ def _update_sidecar_json_robust(json_path: str, new_data: dict):
             time.sleep(0.05)
     return None
 
+def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, retry_sleep_s: float) -> VlmResult:
+    payload = {"image_path": image_path}
 
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            t0 = time.time()
+            resp = requests.post(endpoint, json=payload, timeout=timeout_s)
+            dt = time.time() - t0
+
+            if resp.status_code != 200:
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                log(f"[vlm] attempt {attempt}/{retries} failed in {dt:.2f}s: {last_err}")
+            else:
+                caption = parse_caption_from_response(resp)
+                if not caption:
+                    last_err = "Empty caption"
+                    log(f"[vlm] attempt {attempt}/{retries} got empty caption in {dt:.2f}s")
+                else:
+                    return VlmResult(ok=True, caption=caption, error=None)
+
+        except Exception as e:
+            last_err = str(e)
+            log(f"[vlm] attempt {attempt}/{retries} exception: {last_err}")
+
+        if shutdown_event.is_set():
+            return VlmResult(ok=False, caption=None, error="Shutdown requested")
+        if attempt < retries:
+            time.sleep(retry_sleep_s)
+
+    return VlmResult(ok=False, caption=None, error=last_err)
+
+def process_folder(
+    folder: str,
+    new_folder: str,
+    endpoint: str,
+    path_src: Optional[str],
+    path_dst: Optional[str],
+    timeout_s: float,
+    retries: int,
+    retry_sleep_s: float,
+    force: bool,
+    sleep_between_s: float,
+) -> Tuple[int, int, int]:
+    # if not hasattr(process_folder, "villa_response"):
+    #    process_folder.villa_response=None
+    #    update_cb(villa_response_callback)
+
+    jpgs = sorted([
+        f for f in os.listdir(folder)
+        if f.lower().endswith(".jpg") and not f.lower().endswith("_ann.jpg")
+    ])
+
+    if not jpgs:
+        log(f"[worker] No JPGs found in: {folder}")
+        return (0, 0, 0)
+    print(jpgs)
+    done = skipped = failed = 0
+    new_folder_path = Path(new_folder)
+    new_folder_path.mkdir(parents=True, exist_ok=True)
+
+    folder_path = Path(folder)
+    assert folder_path.is_symlink(), f"{folder_path} is not a symlink"
+    folder = folder_path.resolve()
+
+    latest_link = new_folder_path.parent / "latest"
+    try:
+        if os.path.lexists(latest_link):
+            os.remove(latest_link)
+        os.symlink(new_folder_path, latest_link)
+    except Exception as e:
+        print(f"Failed to create symlink {latest_link}: {e}")
+
+    for jpg in jpgs:
+        jpg_path = Path(folder) / jpg
+        shutil.copy(jpg_path, Path(new_folder))
+        jpg_path = new_folder_path / jpg
+        base = os.path.splitext(jpg)[0]
+        json_path = os.path.join(folder, base + ".json")
+        js = load_json(json_path)
+        json_path = new_folder_path / f"{base}.json"
+
+
+        new_js = {}
+        pose = js.get("pose")
+        new_js.setdefault("pose", pose)
+        new_js.setdefault("image", os.path.basename(str(jpg_path)))
+
+
+        # tmp = json_path + ".tmp"
+        with open(json_path, "w") as f:
+            print(f)
+            json.dump(new_js, f, indent=2)
+        # os.replace(tmp, new_json_path)
+        print("finished dump")
+        if (not force) and already_captioned(js):
+            skipped += 1
+            continue
+
+        img_for_vlm = remap_path(str(jpg_path), path_src, path_dst)
+        log(f"[vlm] POST {endpoint}  image_path={img_for_vlm}")
+
+        t0 = time.time()
+        res = call_vlm(endpoint, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
+        dt = time.time() - t0
+        log(f"[vlm] took {dt:.2f}s  ok={res.ok}")
+
+        vlm_caption = vlm_caption_queue.get()
+        print("%%%%%%%%%  vlm_caption ^^^^^^^^^^^", vlm_caption)
+
+
+        # Update JSON
+        js.setdefault("image", os.path.basename(jpg_path))
+        # Ensure list exists
+        entries = js.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+            js["entries"] = entries
+
+        if res.ok and res.caption:
+            prompt, response = extract_prompt_response(res.caption)
+
+            entries.append({
+                "timestamp": int(time.time()),
+                "prompt": prompt,
+                "response": response,
+            })
+        if res.ok:
+            done += 1
+        else:
+            failed += 1
+
+        if shutdown_event.is_set():
+            return (done, skipped, failed)
+        if sleep_between_s > 0:
+            time.sleep(sleep_between_s)
+
+    return (done, skipped, failed)
+
+
+def run_process_once(args):
+    latest = Path(CAPTURES_ROOT) / "latest"
+
+    parent = latest.parent
+    new_folder_name = datetime.datetime.now().strftime("%Y_%m_%d___%H_%M_%S")
+    new_folder_path = Path(parent / new_folder_name)
+
+    log(f"[worker] Latest folder: {latest}")
+    done, skipped, failed = process_folder(
+        folder=latest.as_posix(),
+        new_folder=new_folder_path.as_posix(),
+        endpoint=args.endpoint,
+        path_src=args.path_src,
+        path_dst=args.path_dst,
+        timeout_s=args.vlm_timeout,
+        retries=args.retries,
+        retry_sleep_s=args.retry_sleep,
+        force=args.force,
+        sleep_between_s=args.sleep_between,
+    )
+    log(f"[worker] summary: done={done} skipped={skipped} failed={failed}")
+    return latest
+
+def update_cb(cb):
+    update_cb.VILLA_RESULTS_CB = cb
+    print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&777 update cb", cb)
 # -------------------- HTTP API --------------------
 @app.post("/from_vila")
 def from_vila():
@@ -447,17 +611,26 @@ def from_vila():
       3) Store NanoOWL output into the sidecar JSON next to that image.
       4) **NEW:** Render annotated image _ann.jpg next to the original.
     """
+
+    if not hasattr(update_cb, "VILLA_RESULTS_CB"):
+        print("VILLA_RESULTS_CB is defined as None")
+        update_cb.VILLA_RESULTS_CB = None
     print("hello")
     caption = request.get_data(as_text=True, parse_form_data=False).strip()
     if not caption:
         print(f"not captoin")
         return jsonify({"ok": False, "error": "empty caption"}), 400
+    vlm_caption_queue.put(caption)
 
     ts = int(time.time())
     print(f"[from_vila][{ts}] {caption}")
     LAST["vila_caption"] = {"ts": ts, "text": caption}
     HISTORY.appendleft({"src": "vila", "ts": ts, "text": caption})
-
+    if update_cb.VILLA_RESULTS_CB is not None:
+        print(f"[villa_cb] _*************************_ vila_cb is NOT None")
+        update_cb.VILLA_RESULTS_CB(caption)
+    else:
+        print(f"[villa_cb] ____________________________ vila_cb is None!!!")
     # ---- 1) Send to Jetson2 and wait for prompts ----
     f_status, f_body, prompts = None, None, None
     if JETSON2_ENDPOINT:
@@ -611,11 +784,28 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=5050)
-
-    p.add_argument("--jetson2-endpoint", required=True,
-                   help="URL to Jetson-2 prompts endpoint, e.g. http://172.16.17.11:5050/prompts")
+    # set root dir
     p.add_argument("--captures-root", required=True,
                    help="Root where capture_frames saves images+json (used to find latest image)")
+    # process_folder
+    p.add_argument("--endpoint", required=True, help="VLM endpoint, e.g. http://192.168.131.22:8080/describe")
+    p.add_argument("--latest-by", choices=["name", "mtime"], default="name", help="How to choose the latest folder")
+    p.add_argument("--path-src", default=None, help="Local root path to remap from (optional)")
+    p.add_argument("--path-dst", default=None, help="Server-visible root path to remap to (optional)")
+    p.add_argument("--vlm-timeout", type=float, default=10.0, help="HTTP timeout per attempt")
+    p.add_argument("--retries", type=int, default=3, help="Retries per image")
+    p.add_argument("--retry-sleep", type=float, default=0.2, help="Sleep between retries")
+    p.add_argument("--sleep-between", type=float, default=3.0, help="Sleep between images (throttle)")
+    p.add_argument("--force", action="store_true", help="Re-caption even if vlm_text exists")
+    p.add_argument("--watch", action="store_true", help="Keep running and process the newest folder repeatedly")
+    p.add_argument("--watch-interval", type=float, default=2.0, help="Seconds between scans in --watch mode")
+    p.add_argument("--exclude-suffix", default="_ann",
+                   help="Ignore folders ending with this suffix (set '' to disable)")
+
+    # llm prompt converter
+    p.add_argument("--jetson2-endpoint", required=True,
+                   help="URL to Jetson-2 prompts endpoint, e.g. http://192.168.131.21:5050/prompts")
+    # nanoowl
     p.add_argument("--nanoowl-endpoint", required=True,
                    help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
 
@@ -629,13 +819,15 @@ def main():
     p.add_argument("--nanoowl-annotate", type=int, default=0,
                    help="Pass annotate=0/1 to NanoOWL")
 
-
+    # send json
     p.add_argument("--forward-json-url", default="http://172.17.16.9:9090/ingest",
                    help="If set, forward the FULL sidecar JSON here, but only when NanoOWL has BBOX detections")
     p.add_argument("--forward-json-timeout", type=float, default=10.0,
                    help="Timeout (sec) for forwarding full JSON")
     p.add_argument("--forward-json-retries", type=int, default=3,
                    help="Retries for forwarding full JSON")
+
+
 
     args = p.parse_args()
 
@@ -657,11 +849,30 @@ def main():
     print(f"  jetson2_endpoint = {JETSON2_ENDPOINT}")
     print(f"  captures_root    = {CAPTURES_ROOT}")
     print(f"  nanoowl_endpoint = {NANOOWL_ENDPOINT} (annotate={NANOOWL_ANNOTATE})")
+    # Start the folder processing loop in a background thread
+    worker_thread = threading.Thread(target=run_process_once, args=(args,), daemon=True)
+    worker_thread.start()
+
+    def handle_shutdown(signum, frame):
+        log(f"[Main] Shutdown signal ({signum}) received. Releasing worker...")
+        shutdown_event.set()
+        sys.exit(0)
+
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
 
     app.run(host=args.host, port=args.port)
+    run_process_once(args)
+
+
 
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
