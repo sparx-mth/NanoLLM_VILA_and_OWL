@@ -86,11 +86,11 @@ VLLM_TIMEOUT = 20.0
 VLLM_MAX_TOKENS = 32
 VLLM_TEMPERATURE = 0.1
 
+
 VLLM_PROMPT_PREFIX = (
-    "From the text, extract only object names that are explicitly mentioned. "
-    "Do not add new objects. Do not guess. "
-    "Return a lowercase JSON array only. "
-    "Remove colors and adjectives. "
+    "Extract unique object names from the text."
+    "Return only a lowercase JSON array. No extra text. "
+    "Remove colors, sizes, and adjectives "
     "Prefix each object with 'a' or 'an'. "
 )
 
