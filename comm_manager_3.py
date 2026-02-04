@@ -91,7 +91,6 @@ VLLM_PROMPT_PREFIX = (
     "Return only a lowercase JSON array. No extra text. "
     "Remove colors, sizes, materials, and adjectives. "
     "Each object must be a noun phrase that starts with 'a' or 'an' "
-    "(e.g., 'a person', 'an apple'). "
 )
 
 _VLLM_SESSION = requests.Session()
