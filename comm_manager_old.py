@@ -835,16 +835,15 @@ def main():
                    help="Ignore folders ending with this suffix (set '' to disable)")
 
     # llm prompt converter
-    p.add_argument("--vllm-url", default=None, help="e.g. http://192.168.131.21:8000") 
+    p.add_argument("--vllm-url", required=True, help="e.g. http://192.168.131.21:8000")
     p.add_argument("--vllm-model", required=True, help="model name as served by vLLM")
     p.add_argument("--vllm-timeout", type=float, default=20.0)
     p.add_argument("--vllm-max-tokens", type=int, default=32)
     p.add_argument("--vllm-temperature", type=float, default=0.2)
 
     # nanoowl
-    p.add_argument("--nanoowl-endpoint", default=None,
-               help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
-
+    p.add_argument("--nanoowl-endpoint", required=True,
+                   help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
 
     p.add_argument("--forward-timeout", type=float, default=30.0,
                    help="Timeout (sec) for POST to Jetson-2")
@@ -864,45 +863,9 @@ def main():
     p.add_argument("--forward-json-retries", type=int, default=3,
                    help="Retries for forwarding full JSON")
 
-    p.add_argument("--config", default="config/networks.yaml",
-                        help="Path to networks config YAML")
-    p.add_argument("--profile", default=None,
-                        help="Profile name (adsl|robotican). Overrides R2_PROFILE and defaults.profile")
-    p.add_argument("--no-config", action="store_true",
-                        help="Disable config resolution and use CLI flags as-is")
+
 
     args = p.parse_args()
-
-    from config.profile_loader import load_profile
-
-    if not args.no_config:
-        net = load_profile(args.config, args.profile)
-
-        # Override relevant args automatically
-        # (keep CLI override possible only if you want — right now config wins)
-        args.vllm_url = net.vllm_url
-        args.nanoowl_endpoint = net.nanoowl_infer_url
-        args.forward_json_url = net.ingest_json_url
-        args.endpoint = net.vila_describe_url
-
-        # Optional: print summary once
-        print(
-            f"[comm_manager] profile={net.name} | VLLM={args.vllm_url} | VILA={args.endpoint} | OWL={args.nanoowl_endpoint} | INGEST={args.forward_json_url}")
-    # ---- validate required settings after config resolution ----
-    missing = []
-    if not args.captures_root:
-        missing.append("--captures-root")
-    if not args.endpoint:
-        missing.append("--endpoint (VILA /describe)")
-    if not args.vllm_url:
-        missing.append("--vllm-url (or profile must provide vllm)")
-    if not args.nanoowl_endpoint:
-        missing.append("--nanoowl-endpoint (or profile must provide nanoowl)")
-    if not args.vllm_model:
-        missing.append("--vllm-model (or set a default / put in config)")
-
-    if missing:
-        p.error("Missing required args after config resolution: " + ", ".join(missing))
 
     CAPTURES_ROOT = args.captures_root.strip()
     NANOOWL_ENDPOINT = args.nanoowl_endpoint.strip()
