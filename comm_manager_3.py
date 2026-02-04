@@ -257,7 +257,7 @@ def _vllm_extract_prompts(sentence: str) -> list[str]:
     r.raise_for_status()
     j = r.json()
     content = j["choices"][0]["message"]["content"].strip()
-
+    print("[vllm][raw]\n", content)
     try:
         arr = json.loads(content)
     except Exception:
