@@ -238,11 +238,14 @@ def _vllm_extract_prompts(sentence: str) -> list[str]:
     if not VLLM_URL:
         return []
 
+    sentence = re.sub(r"</s>\s*$", "", sentence.strip())
+
     payload = {
         "model": VLLM_MODEL,
         "messages": [{"role": "user", "content": VLLM_PROMPT_PREFIX + sentence}],
         "max_tokens": int(VLLM_MAX_TOKENS),
         "temperature": float(VLLM_TEMPERATURE),
+        "stop": ["</s>", "\n\n"]
     }
 
     r = _VLLM_SESSION.post(
@@ -255,12 +258,21 @@ def _vllm_extract_prompts(sentence: str) -> list[str]:
     j = r.json()
     content = j["choices"][0]["message"]["content"].strip()
 
-    arr = json.loads(content)  # trusting model output is JSON array
+    try:
+        arr = json.loads(content)
+    except Exception:
+        m = re.search(r"\[[\s\S]*\]", content)
+        if m:
+            try:
+                arr = json.loads(m.group(0))
+            except Exception:
+                arr = None
+        else:
+            arr = None
 
     if not isinstance(arr, list):
-        raise ValueError(f"Expected JSON array from vLLM, got: {content}")
+        arr = re.findall(r'"([^"]+)"', content)
 
-    # tiny cleanup: lowercase + unique
     out, seen = [], set()
     for x in arr:
         if isinstance(x, str):
@@ -269,6 +281,7 @@ def _vllm_extract_prompts(sentence: str) -> list[str]:
                 seen.add(x2)
                 out.append(x2)
     return out
+
 
 
 
