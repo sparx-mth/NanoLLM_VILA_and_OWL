@@ -116,7 +116,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 display_server.py  \
+python3 display_server_2.py  \
  --root /home/user/jetson-containers/data/R2  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
