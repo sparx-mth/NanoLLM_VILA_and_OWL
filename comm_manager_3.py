@@ -87,9 +87,11 @@ VLLM_MAX_TOKENS = 32
 VLLM_TEMPERATURE = 0.1
 
 VLLM_PROMPT_PREFIX = (
-    "Extract unique object names from the text. "
-    "Return only a lowercase JSON array. No extra text. "
-    "Remove colors, sizes, materials, and adjectives. Each object must be a noun phrase that starts with 'a' or 'an' "
+    "From the text, extract only object names that are explicitly mentioned. "
+    "Do not add new objects. Do not guess. "
+    "Return a lowercase JSON array only. "
+    "Remove colors and adjectives. "
+    "Prefix each object with 'a' or 'an'. "
 )
 
 _VLLM_SESSION = requests.Session()
