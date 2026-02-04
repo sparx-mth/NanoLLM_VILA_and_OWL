@@ -65,7 +65,7 @@ jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-con
 
 Then start the API server:
 ```bash
-python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://192.168.131.22:5050/from_vila
+python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://172.16.17.15:5050/from_vila
 ```
 test:
 ```bash 
@@ -137,11 +137,12 @@ cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 comm_manager_2.py   \
 --host 0.0.0.0 \
    --port 5050  \
-   --jetson2-endpoint http://192.168.131.21:5050/prompts    \
-   --captures-root /home/user/jetson-containers/data/R2/ \
-   --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3  \
+   --jetson2-endpoint http://172.16.17.14:5050/prompts    \
+   --captures-root /home/user/jetson-containers/data/R1/ \
+   --nanoowl-endpoint http://172.16.17.15:5060/infer  --forward-timeout 45   --forward-retries 3  \
    --nanoowl-timeout 70   --nanoowl-annotate 0  \
-   --forward-json-url http://192.168.131.23:9090/ingest
+   --forward-json-url http://172.16.17.6:9090/ingest \
+   --endpoint http://172.16.17.15:8080/describe --force
          
 
  ```

@@ -58,12 +58,8 @@ vlm_caption_queue = queue.Queue()
 app = Flask(__name__)
 
 # --- Runtime configuration (populated from CLI args) ---
-JETSON2_ENDPOINT = None      # e.g., http://172.16.17.11:5050/prompts
 NANOOWL_ENDPOINT = None      # e.g., http://172.16.17.11:5060/infer
 CAPTURES_ROOT = None         # e.g., /home/user/jetson-containers/data/images/captures
-
-FORWARD_TIMEOUT = 30.0       # Jetson2 prompts timeout
-FORWARD_RETRIES = 3          # Jetson2 prompts retries
 
 NANOOWL_TIMEOUT = 45.0       # NanoOWL infer timeout
 NANOOWL_ANNOTATE = 0         # annotate flag sent to NanoOWL (0/1)
@@ -78,37 +74,27 @@ FORWARD_JSON_RETRIES = 3
 HISTORY = deque(maxlen=200)
 LAST = {
     "vila_caption": None,        # {"ts": int, "text": str}
-    "jetson2_prompts": None,     # {"ts": int, "prompts": [str]}
     "last_forward_status": None, # {"status": int, "body": str/dict}
     "last_image_path": None,     # str
     "nanoowl_result": None,      # {"status": int, "body": any}
 }
 
+
+VLLM_URL = None
+VLLM_MODEL = None
+VLLM_TIMEOUT = 20.0
+VLLM_MAX_TOKENS = 32
+VLLM_TEMPERATURE = 0.2
+
+VLLM_PROMPT_PREFIX = (
+    "Extract unique object names from the text."
+    "Return only a lowercase JSON array. No extra text. "
+    "Remove colors, sizes, materials, and adjectives: "
+)
+
+_VLLM_SESSION = requests.Session()
+
 # -------------------- Helpers --------------------
-
-
-
-def _http_post_json(url: str, payload: dict, timeout: float = 6.0):
-    """
-    POST JSON using stdlib (no requests). Returns (status_code, response_text).
-    """
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = getattr(resp, "status", 200)
-            body = resp.read().decode("utf-8", errors="replace")
-            return status, body
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
-        return e.code, body
-    except Exception as e:
-        return -1, str(e)
 
 def _is_in_ann_folder(fp: str) -> bool:
     p = Path(fp)
@@ -231,6 +217,59 @@ def _ann_outpath_for_image(image_path: str) -> str:
     out_name = f"{base_name}_ann.jpg"
 
     return os.path.join(ann_dir, out_name)
+
+def _vllm_extract_prompts(sentence: str) -> list[str]:
+    """
+    Extracts a list of prompts from a given sentence using the vLLM API.
+
+    This function communicates with a vLLM service to derive an array of prompts
+    based on the input sentence. It sends the sentence along with specific parameters
+    to an API endpoint and expects a response containing a JSON array.
+
+    Parameters:
+    sentence (str): The input sentence to process and retrieve prompts for.
+
+    Returns:
+    list[str]: A list of unique, lowercase prompts extracted from the input sentence.
+
+    Raises:
+    ValueError: If the response from the vLLM API is not formatted as a JSON array.
+    """
+    if not VLLM_URL:
+        return []
+
+    payload = {
+        "model": VLLM_MODEL,
+        "messages": [{"role": "user", "content": VLLM_PROMPT_PREFIX + sentence}],
+        "max_tokens": int(VLLM_MAX_TOKENS),
+        "temperature": float(VLLM_TEMPERATURE),
+    }
+
+    r = _VLLM_SESSION.post(
+        f"{VLLM_URL.rstrip('/')}/v1/chat/completions",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=float(VLLM_TIMEOUT),
+    )
+    r.raise_for_status()
+    j = r.json()
+    content = j["choices"][0]["message"]["content"].strip()
+
+    arr = json.loads(content)  # trusting model output is JSON array
+
+    if not isinstance(arr, list):
+        raise ValueError(f"Expected JSON array from vLLM, got: {content}")
+
+    # tiny cleanup: lowercase + unique
+    out, seen = [], set()
+    for x in arr:
+        if isinstance(x, str):
+            x2 = x.strip().lower()
+            if x2 and x2 not in seen:
+                seen.add(x2)
+                out.append(x2)
+    return out
+
 
 
 # -------------------- Annotation utilities (OpenCV) --------------------
@@ -631,41 +670,19 @@ def from_vila():
         update_cb.VILLA_RESULTS_CB(caption)
     else:
         print(f"[villa_cb] ____________________________ vila_cb is None!!!")
-    # ---- 1) Send to Jetson2 and wait for prompts ----
-    f_status, f_body, prompts = None, None, None
-    if JETSON2_ENDPOINT:
-        last_err = None
-        for attempt in range(1, int(FORWARD_RETRIES or 1) + 1):
-            f_status, f_body = _http_post_json(
-                JETSON2_ENDPOINT, {"sentence": caption}, timeout=float(FORWARD_TIMEOUT or 10.0)
-            )
-            if f_status not in (-1, 408, 504) and not (isinstance(f_status, int) and f_status >= 500):
-                break
-            last_err = f_body
-            print(f"[forward->jetson2] attempt {attempt} failed: status={f_status} body={str(f_body)[:180]}")
-            time.sleep(min(2.0 * attempt, 6.0))
 
-        print(f"[forward->jetson2] status={f_status} body={f_body[:180] if isinstance(f_body, str) else f_body}")
-        try:
-            data = json.loads(f_body) if isinstance(f_body, str) else {}
-            if isinstance(data, dict) and isinstance(data.get("prompts"), list):
-                prompts = [str(x) for x in data["prompts"]]
-        except Exception:
-            prompts = None
-
-        LAST["last_forward_status"] = {"status": f_status, "body": f_body}
-        if prompts:
-            LAST["jetson2_prompts"] = {"ts": int(time.time()), "prompts": prompts}
-            HISTORY.appendleft({"src": "jetson2", "ts": int(time.time()), "prompts": prompts})
-            print(f"[jetson2][prompts] {prompts}")
-        else:
-            print("[jetson2][warn] no prompts parsed")
+    # ---- 1) Get prompts directly from vLLM (single hop) ----
+    try:
+        prompts = _vllm_extract_prompts(caption)
+        print(f"[vllm][prompts] {prompts}")
+    except Exception as e:
+        print(f"[vllm][error] {e}")
+        prompts = None
 
     if not prompts:
         return jsonify({
             "ok": True,
             "note": "prompts missing; NanoOWL not called",
-            "forward_status": f_status,
             "prompts": None
         })
 
@@ -726,13 +743,13 @@ def from_vila():
 
                     # 4) post
                     s, b = _post_full_json(
-                    url=FORWARD_JSON_URL,
-                    obj=meta,
-                    timeout=FORWARD_JSON_TIMEOUT,
-                    retries=FORWARD_JSON_RETRIES,
-                    headers=headers,             #  <<<<< add
-                )
-                print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
+                        url=FORWARD_JSON_URL,
+                        obj=meta,
+                        timeout=FORWARD_JSON_TIMEOUT,
+                        retries=FORWARD_JSON_RETRIES,
+                        headers=headers,
+                    )
+                    print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
 
         except Exception as e:
             print(f"[forward-json][error] {e}")
@@ -778,8 +795,8 @@ def health():
 # -------------------- Main --------------------
 
 def main():
-    global JETSON2_ENDPOINT, NANOOWL_ENDPOINT, CAPTURES_ROOT
-    global FORWARD_TIMEOUT, FORWARD_RETRIES, NANOOWL_TIMEOUT, NANOOWL_ANNOTATE
+    global NANOOWL_ENDPOINT, CAPTURES_ROOT
+    global NANOOWL_TIMEOUT, NANOOWL_ANNOTATE
 
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="0.0.0.0")
@@ -803,8 +820,12 @@ def main():
                    help="Ignore folders ending with this suffix (set '' to disable)")
 
     # llm prompt converter
-    p.add_argument("--jetson2-endpoint", required=True,
-                   help="URL to Jetson-2 prompts endpoint, e.g. http://192.168.131.21:5050/prompts")
+    p.add_argument("--vllm-url", required=True, help="e.g. http://192.168.131.21:8000")
+    p.add_argument("--vllm-model", required=True, help="model name as served by vLLM")
+    p.add_argument("--vllm-timeout", type=float, default=20.0)
+    p.add_argument("--vllm-max-tokens", type=int, default=32)
+    p.add_argument("--vllm-temperature", type=float, default=0.2)
+
     # nanoowl
     p.add_argument("--nanoowl-endpoint", required=True,
                    help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
@@ -831,12 +852,9 @@ def main():
 
     args = p.parse_args()
 
-    JETSON2_ENDPOINT = args.jetson2_endpoint.strip()
     CAPTURES_ROOT = args.captures_root.strip()
     NANOOWL_ENDPOINT = args.nanoowl_endpoint.strip()
 
-    FORWARD_TIMEOUT = args.forward_timeout
-    FORWARD_RETRIES = args.forward_retries
     NANOOWL_TIMEOUT = args.nanoowl_timeout
     NANOOWL_ANNOTATE = int(args.nanoowl_annotate)
 
@@ -845,8 +863,14 @@ def main():
     FORWARD_JSON_TIMEOUT = float(args.forward_json_timeout)
     FORWARD_JSON_RETRIES = int(args.forward_json_retries)
 
+    global VLLM_URL, VLLM_MODEL, VLLM_TIMEOUT, VLLM_MAX_TOKENS, VLLM_TEMPERATURE
+    VLLM_URL = args.vllm_url.strip()
+    VLLM_MODEL = args.vllm_model.strip()
+    VLLM_TIMEOUT = args.vllm_timeout
+    VLLM_MAX_TOKENS = args.vllm_max_tokens
+    VLLM_TEMPERATURE = args.vllm_temperature
+
     print(f"[comm_manager] listening on {args.host}:{args.port}")
-    print(f"  jetson2_endpoint = {JETSON2_ENDPOINT}")
     print(f"  captures_root    = {CAPTURES_ROOT}")
     print(f"  nanoowl_endpoint = {NANOOWL_ENDPOINT} (annotate={NANOOWL_ANNOTATE})")
     # Start the folder processing loop in a background thread
