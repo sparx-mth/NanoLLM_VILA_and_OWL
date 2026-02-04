@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 
 import requests
 
-from comm_manager_2 import update_cb
+from comm_manager import update_cb
 
 
 @dataclass

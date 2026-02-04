@@ -116,7 +116,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 display_server_2.py  \
+python3 display_server.py  \
  --root /home/user/jetson-containers/data/R2  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
@@ -134,7 +134,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 comm_manager_3.py   --host 0.0.0.0    --port 5050     --vllm-url http://172.16.17.14:8000  --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/    --nanoowl-endpoint http://172.16.17.15:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://172.16.17.6:9090/ingest    --endpoint http://172.16.17.15:8080/describe --force
+python3 comm_manager.py   --host 0.0.0.0    --port 5050     --vllm-url http://172.16.17.14:8000  --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/    --nanoowl-endpoint http://172.16.17.15:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://172.16.17.6:9090/ingest    --endpoint http://172.16.17.15:8080/describe --force
 ```
 
 ## 6. **LLM Object List Extractor**

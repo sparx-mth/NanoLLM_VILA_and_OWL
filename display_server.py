@@ -140,6 +140,8 @@ def _ann_variant(path: Path) -> Path:
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
+    latest = root / "latest"
+    return latest if latest.exists() and latest.is_dir() else None
     """Return newest immediate subdirectory under root (by ctime)."""
     try:
         subdirs = [d for d in root.iterdir() if d.is_dir()]
@@ -189,7 +191,8 @@ def _extract_text(doc: dict) -> str:
 def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items: List[Item] = []
     seen_keys = set()  
-
+    imgs_list = [p for p in root.glob("**/*")]
+    print(f"[_collect_items] images list: {imgs_list}")
     for img_path in root.glob("**/*"):
         if not img_path.is_file():
             continue
@@ -198,7 +201,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
 
         if img_path.stem.endswith("_ann"):
             continue
-
+        print(f"[_collect_items] Found image: {img_path}")
         ann_path = _ann_variant(img_path)
         use_path = ann_path if ann_path.exists() else img_path
 
@@ -270,10 +273,13 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
         if latest_only:
             last_dir = _latest_run_dir(root)
             if last_dir is not None:
-                scan_root = last_dir
+                assert last_dir.is_symlink(), f"Latest run directory {last_dir} is not a symlink!"
+                scan_root = last_dir.resolve()
                 current_run = str(last_dir.relative_to(root))
-    
+        print(f"[server] Scanning directory: {scan_root}")
+
         items = _collect_items(scan_root, rel_root=root)
+        print(f"[server] Found {len(items)} items")
         payload = [
             {
                 "basename": it.basename,
@@ -296,6 +302,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
             abort(403)
         if not full.exists() or not full.is_file():
             abort(404)
+        print(f"[server] Serving image: {full}")
         directory = str(full.parent)
         filename = full.name
         return send_from_directory(directory, filename)
@@ -379,7 +386,7 @@ INDEX_HTML = r"""
 </head>
 <body>
   <header>
-    <img src="/static/sparx.jpg" alt="Logo" class="logo" />
+    <img src="/static/sparx_logo.png" alt="Logo" class="logo" />
     <h1>VLM Ingest Viewer</h1>
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
