@@ -863,9 +863,30 @@ def main():
     p.add_argument("--forward-json-retries", type=int, default=3,
                    help="Retries for forwarding full JSON")
 
-
+    p.add_argument("--config", default="config/networks.yaml",
+                        help="Path to networks config YAML")
+    p.add_argument("--profile", default=None,
+                        help="Profile name (adsl|robotican). Overrides R2_PROFILE and defaults.profile")
+    p.add_argument("--no-config", action="store_true",
+                        help="Disable config resolution and use CLI flags as-is")
 
     args = p.parse_args()
+
+    from config.profile_loader import load_profile
+
+    if not args.no_config:
+        net = load_profile(args.config, args.profile)
+
+        # Override relevant args automatically
+        # (keep CLI override possible only if you want — right now config wins)
+        args.vllm_url = net.vllm_url
+        args.nanoowl_endpoint = net.nanoowl_infer_url
+        args.forward_json_url = net.ingest_json_url
+        args.endpoint = net.vila_describe_url
+
+        # Optional: print summary once
+        print(
+            f"[comm_manager] profile={net.name} | VLLM={args.vllm_url} | VILA={args.endpoint} | OWL={args.nanoowl_endpoint} | INGEST={args.forward_json_url}")
 
     CAPTURES_ROOT = args.captures_root.strip()
     NANOOWL_ENDPOINT = args.nanoowl_endpoint.strip()
