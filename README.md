@@ -72,6 +72,31 @@ test:
 curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/home/user/jetson-containers/data/R1/R1_20260127_133752.jpg"}'
 ```
 
+### VLLM WITH QWEN:
+***do not use***
+in terminal 1:
+```bash
+docker run --rm -it \
+  --runtime nvidia \
+  --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm_qwen3_vl_4b_instruct_aws_4bit:latest
+```
+
+
+Inside the container, start the vLLM API server:
+
+```
+vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
+  --dtype float16 \
+  --gpu-memory-utilization 0.5 \
+  --max-model-len 512 \
+  --max-num-batched-tokens 128 \
+  --max-num-seqs 1 \
+  --swap-space 0 \
+  --enforce-eager
+```
+
 
 
 ## 3. **NanoOWL Object Detector**
