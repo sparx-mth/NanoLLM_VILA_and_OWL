@@ -14,8 +14,9 @@ from nanoowl.owl_predictor import OwlPredictor
 
 # ---------------- Config (can be set via CLI) ----------------
 MIN_SCORE = 0.35
-NMS_IOU   = 0.5
+NMS_IOU = 0.2
 JPEG_QUALITY = 90
+
 
 # ---------------- Helpers (adapted from your script) ---------
 def _iter_detections(dets):
@@ -25,19 +26,22 @@ def _iter_detections(dets):
         return dets.values()
     return dets or []
 
+
 def _clean_label(name: str) -> str:
     return name.strip().strip('"').strip("'").lower()
+
 
 def _iou(a, b):
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     x1, y1 = max(ax1, bx1), max(ay1, by1)
     x2, y2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0, x2-x1), max(0, y2-y1)
+    iw, ih = max(0, x2 - x1), max(0, y2 - y1)
     inter = iw * ih
-    ua = (ax2-ax1)*(ay2-ay1)
-    ub = (bx2-bx1)*(by2-by1)
+    ua = (ax2 - ax1) * (ay2 - ay1)
+    ub = (bx2 - bx1) * (by2 - by1)
     return inter / max(1e-6, ua + ub - inter)
+
 
 def _nms_per_class(dets, iou_thresh=NMS_IOU):
     out, by = [], {}
@@ -52,17 +56,18 @@ def _nms_per_class(dets, iou_thresh=NMS_IOU):
         out.extend(keep)
     return out
 
+
 def _pack_detections(predictions, tree: Tree, min_score=MIN_SCORE):
     out = []
     for td in _iter_detections(predictions):
-        box    = getattr(td, "box", None)
+        box = getattr(td, "box", None)
         labels = getattr(td, "labels", None)
         scores = getattr(td, "scores", None)
         parent = getattr(td, "parent_id", None)
         if box is None or labels is None or scores is None:
             continue
         lbl_idx = int(labels[0]) if isinstance(labels, (list, tuple)) else int(labels)
-        score   = float(scores[0]) if isinstance(scores, (list, tuple)) else float(scores)
+        score = float(scores[0]) if isinstance(scores, (list, tuple)) else float(scores)
         name = _clean_label(str(tree.labels[lbl_idx]))
         # skip root node
         if name == "image" or parent == -1:
@@ -73,35 +78,43 @@ def _pack_detections(predictions, tree: Tree, min_score=MIN_SCORE):
         out.append({"label": name, "bbox": [x1, y1, x2, y2], "score": score})
     return out
 
+
 def _draw_from_dets(img_bgr, dets):
     out = img_bgr.copy()
     H, W = out.shape[:2]
-    pal = [(0,255,0), (255,0,0), (0,0,255), (0,255,255),
-           (255,255,0), (255,0,255), (128,128,0), (0,128,128)]
-    def clip(v, lo, hi): return max(lo, min(hi, int(v)))
+    pal = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (0, 255, 255),
+           (255, 255, 0), (255, 0, 255), (128, 128, 0), (0, 128, 128)]
+
+    def clip(v, lo, hi):
+        return max(lo, min(hi, int(v)))
+
     for i, d in enumerate(dets):
         x1, y1, x2, y2 = d["bbox"]
-        x1, y1 = clip(x1, 0, W-1), clip(y1, 0, H-1)
-        x2, y2 = clip(x2, 0, W-1), clip(y2, 0, H-1)
+        x1, y1 = clip(x1, 0, W - 1), clip(y1, 0, H - 1)
+        x2, y2 = clip(x2, 0, W - 1), clip(y2, 0, H - 1)
         if x2 <= x1 or y2 <= y1: continue
         color = pal[i % len(pal)]
-        cv2.rectangle(out, (x1,y1), (x2,y2), color, 2)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
         cv2.putText(out, f"{d['label']}:{d['score']:.2f}",
-                    (x1, max(0, y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    (x1, max(0, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
     return out
+
 
 def _prompts_hash(prompts: List[str]) -> str:
     return hashlib.sha1(("\n".join(prompts)).encode("utf-8")).hexdigest()
+
 
 def _encode_prompts(predictor: TreePredictor, prompts: List[str]):
     pstr = "[" + ", ".join([json.dumps(p) for p in prompts]) + "]"
     tree = Tree.from_prompt(pstr)
     clip = predictor.encode_clip_text(tree)
-    owl  = predictor.encode_owl_text(tree)
+    owl = predictor.encode_owl_text(tree)
     return tree, clip, owl
+
 
 def _as_pil_from_bgr(img_bgr):
     return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+
 
 # ---------------- App / Model init ----------------
 app = Flask(__name__)
@@ -110,9 +123,11 @@ CORS(app)
 predictor: Optional[TreePredictor] = None
 enc_cache: Dict[str, tuple[Tree, object, object]] = {}
 
+
 @app.route("/health", methods=["GET"])
 def health():
     return {"ok": True}, 200
+
 
 @app.route("/infer", methods=["POST"])
 def infer():
@@ -150,7 +165,7 @@ def infer():
                 prompts = json.loads(p_raw) if p_raw else []
             except Exception:
                 return jsonify({"error": "form 'prompts' must be JSON list"}), 400
-            annotate = request.form.get("annotate", "") in ("1","true","yes")
+            annotate = request.form.get("annotate", "") in ("1", "true", "yes")
         else:
             data = request.get_json(silent=True) or {}
             b64 = (data.get("image_b64") or "").strip()
@@ -206,6 +221,85 @@ def infer():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+BATCH_SIZE = 4
+
+
+@app.route("/infer_batch", methods=["POST"])
+def infer_batch():
+    """
+    Accepts application/json:
+    {
+      "images_b64": ["base64_1", "base64_2", ...],
+      "prompts": ["a cat", "a dog"],
+      "annotate": true
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        images_b64 = data.get("images_b64", [])
+        prompts = data.get("prompts", [])
+        annotate = bool(data.get("annotate", False))
+
+        if not images_b64:
+            return jsonify({"error": "no images provided"}), 400
+
+        # 1. Decode all images in the request
+        batch_imgs_bgr = []
+        batch_imgs_pil = []
+        for b64 in images_b64:
+            img_bytes = base64.b64decode(b64.strip())
+            bgr = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            batch_imgs_bgr.append(bgr)
+            batch_imgs_pil.append(_as_pil_from_bgr(bgr))
+
+        # 2. Get/Cache prompt encodings
+        ph = _prompts_hash(prompts)
+        if ph not in enc_cache:
+            enc_cache[ph] = _encode_prompts(predictor, prompts)
+        tree, clip, owl = enc_cache[ph]
+
+        # 3. RUN BATCH INFERENCE
+        # We need to loop or slice because predictor.predict usually takes 1 image.
+        # However, since you modified the engine, we MUST pass a list to our
+        # modified predictor or call predict 4 times in a tight loop.
+
+        t0 = time.perf_counter()
+
+        # If you modified owl_predictor.py to support lists:
+        all_results = predictor.predict(
+            batch_imgs_pil,
+            tree=tree,
+            clip_text_encodings=clip,
+            owl_text_encodings=owl
+        )
+
+        latency = time.perf_counter() - t0
+
+        # 4. Pack results for each image in the batch
+        batch_output = []
+        for i, preds in enumerate(all_results):
+            dets = _pack_detections(preds, tree, MIN_SCORE)
+            dets = _nms_per_class(dets, iou_thresh=NMS_IOU)
+
+            res = {"detections": dets}
+            if annotate:
+                drawn = _draw_from_dets(batch_imgs_bgr[i], dets)
+                _, enc = cv2.imencode(".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+                res["annotated_image_b64"] = base64.b64encode(enc.tobytes()).decode("ascii")
+
+            batch_output.append(res)
+
+        return jsonify({
+            "results": batch_output,
+            "latency_total_sec": round(latency, 4),
+            "latency_per_img": round(latency / len(images_b64), 4)
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def main():
     global predictor, MIN_SCORE, NMS_IOU, JPEG_QUALITY
 
@@ -216,18 +310,22 @@ def main():
     ap.add_argument("--min-score", type=float, default=MIN_SCORE)
     ap.add_argument("--nms-iou", type=float, default=NMS_IOU)
     ap.add_argument("--jpeg-quality", type=int, default=JPEG_QUALITY)
+    ap.add_argument("--batch-size", type=int, default=1,
+                    help="owl_image_encoder_patch32: max batch size is 1, data/owl_image_encoder_b4_fp16.engine batch size is 4")
     args = ap.parse_args()
 
     MIN_SCORE = args.min_score
-    NMS_IOU   = args.nms_iou
+    NMS_IOU = args.nms_iou
     JPEG_QUALITY = args.jpeg_quality
 
     print("Loading NanoOWL engines…")
     t0 = time.perf_counter()
-    predictor = TreePredictor(owl_predictor=OwlPredictor(image_encoder_engine=args.engine))
-    print(f"NanoOWL ready in {time.perf_counter()-t0:.2f}s")
+    predictor = TreePredictor(
+        owl_predictor=OwlPredictor(image_encoder_engine=args.engine, image_encoder_engine_max_batch_size=4))
+    print(f"NanoOWL ready in {time.perf_counter() - t0:.2f}s")
 
     app.run(host=args.host, port=args.port, debug=False)
+
 
 if __name__ == "__main__":
     main()
