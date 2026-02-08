@@ -69,7 +69,7 @@ python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b 
 ```
 test:
 ```bash 
-curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/mnt/VLM/jetson-data/PortraitA_01.jpg"}'
+curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/home/user/jetson-containers/data/R1/R1_20260127_133752.jpg"}'
 ```
 
 
