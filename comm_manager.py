@@ -32,6 +32,7 @@ import queue
 import signal
 import sys
 import threading
+
 from collections.abc import Callable
 
 from typing import Optional, Tuple
@@ -53,6 +54,9 @@ import cv2                           # for drawing boxes
 from utils_pipeline import log, load_json, already_captioned, extract_prompt_response, remap_path, \
     parse_caption_from_response, VlmResult
 
+import logging
+from logging.handlers import RotatingFileHandler
+
 shutdown_event = threading.Event()
 vlm_caption_queue = queue.Queue()
 app = Flask(__name__)
@@ -68,7 +72,7 @@ _ANN_RE = re.compile(r"_ann\.(jpg|jpeg|png)$", re.IGNORECASE)
 
 FORWARD_JSON_URL = None       # e.g., http://172.17.16.9:9090/ingest
 FORWARD_JSON_TIMEOUT = 8.0
-FORWARD_JSON_RETRIES = 3
+FORWARD_JSON_RETRIES = 1
 
 # --- Simple in-memory log/state for quick debugging ---
 HISTORY = deque(maxlen=200)
@@ -96,6 +100,22 @@ VLLM_PROMPT_PREFIX = (
 
 
 _VLLM_SESSION = requests.Session()
+
+LOG_PATH = os.environ.get("COMM_LOG", "comm_timings.log")
+logger = logging.getLogger("comm")
+logger.setLevel(logging.INFO)
+
+fmt = logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+
+fh = RotatingFileHandler(LOG_PATH, maxBytes=10*1024*1024, backupCount=5)
+fh.setFormatter(fmt)
+
+ch = logging.StreamHandler()
+ch.setFormatter(fmt)
+
+if not logger.handlers:
+    logger.addHandler(fh)
+    logger.addHandler(ch)
 
 # -------------------- Helpers --------------------
 
@@ -187,17 +207,26 @@ def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
         return -1, "nanoowl endpoint not configured"
     if not (image_path and os.path.isfile(image_path)):
         return -1, f"image not found: {image_path}"
+    t0 = time.perf_counter()
+    f = open(image_path, "rb")  
     files = {"image": (os.path.basename(image_path), open(image_path, "rb"), "application/octet-stream")}
     data = {"prompts": json.dumps(prompts or []), "annotate": str(int(annotate))}
     try:
         r = requests.post(endpoint, files=files, data=data, timeout=timeout)
+        dt = time.perf_counter() - t0
         try:
             body = r.json()
         except Exception:
             body = r.text
-        return r.status_code, body
+        return r.status_code, body, dt
     except Exception as e:
-        return -1, str(e)
+        dt = time.perf_counter() - t0
+        return -1, str(e), dt
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
 
 
 def _ann_outpath_for_image(image_path: str) -> str:
@@ -655,11 +684,13 @@ def run_process_once(args):
 def update_cb(cb):
     update_cb.VILLA_RESULTS_CB = cb
     print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&777 update cb", cb)
+
 # -------------------- HTTP API --------------------
 @app.post("/from_vila")
 def from_vila():
     """
     Entry point called by VILA (text/plain body = caption).
+
     We MUST:
       1) Forward caption to Jetson2 /prompts and WAIT for prompts.
       2) Only then find the latest image and call NanoOWL with (image, prompts).
@@ -670,60 +701,93 @@ def from_vila():
     if not hasattr(update_cb, "VILLA_RESULTS_CB"):
         print("VILLA_RESULTS_CB is defined as None")
         update_cb.VILLA_RESULTS_CB = None
-    print("hello")
+
     caption = request.get_data(as_text=True, parse_form_data=False).strip()
     if not caption:
-        print(f"not captoin")
+        print("not caption")
         return jsonify({"ok": False, "error": "empty caption"}), 400
-    vlm_caption_queue.put(caption)
 
+    req_id = f"{int(time.time())}-{os.getpid()}"
+    t_total0 = time.perf_counter()
+    t = {}  # timings dict
+
+    # bookkeeping
+    vlm_caption_queue.put(caption)
     ts = int(time.time())
     print(f"[from_vila][{ts}] {caption}")
     LAST["vila_caption"] = {"ts": ts, "text": caption}
     HISTORY.appendleft({"src": "vila", "ts": ts, "text": caption})
-    if update_cb.VILLA_RESULTS_CB is not None:
-        print(f"[villa_cb] _*************************_ vila_cb is NOT None")
-        update_cb.VILLA_RESULTS_CB(caption)
-    else:
-        print(f"[villa_cb] ____________________________ vila_cb is None!!!")
 
-    # ---- 1) Get prompts directly from vLLM (single hop) ----
+    if update_cb.VILLA_RESULTS_CB is not None:
+        try:
+            update_cb.VILLA_RESULTS_CB(caption)
+        except Exception as e:
+            print(f"[villa_cb][error] {e}")
+
+    # ---- 1) Get prompts from vLLM ----
+    t0 = time.perf_counter()
     try:
         prompts = _vllm_extract_prompts(caption)
         print(f"[vllm][prompts] {prompts}")
     except Exception as e:
         print(f"[vllm][error] {e}")
         prompts = None
+    t["vllm_sec"] = time.perf_counter() - t0
 
     if not prompts:
+        t["total_sec"] = time.perf_counter() - t_total0
+        try:
+            logger.info(f"[{req_id}] DONE prompts_missing total={t['total_sec']:.3f} vllm={t['vllm_sec']:.3f}")
+        except Exception:
+            pass
         return jsonify({
             "ok": True,
             "note": "prompts missing; NanoOWL not called",
-            "prompts": None
+            "prompts": None,
+            "timings": t
         })
 
     # ---- 2) Find latest image + sidecar JSON ----
+    t0 = time.perf_counter()
     img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
+    t["find_latest_sec"] = time.perf_counter() - t0
+
     LAST["last_image_path"] = img_path
     if not img_path:
-        print(f"[nanoowl][warn] no image found under {CAPTURES_ROOT}")
+        t["total_sec"] = time.perf_counter() - t_total0
+        try:
+            logger.info(
+                f"[{req_id}] FAIL no_image total={t['total_sec']:.3f} "
+                f"vllm={t['vllm_sec']:.3f} find={t['find_latest_sec']:.3f}"
+            )
+        except Exception:
+            pass
         return jsonify({
             "ok": False,
             "error": f"no image found under {CAPTURES_ROOT}",
-            "prompts": prompts
+            "prompts": prompts,
+            "timings": t
         }), 500
+
     if not json_path:
         base, _ = os.path.splitext(img_path)
         json_path = base + ".json"
 
-    # ---- 3) Call NanoOWL ----
-    status, body = _post_nanoowl_multipart(
-        endpoint=NANOOWL_ENDPOINT,
-        image_path=img_path,
-        prompts=prompts,
-        annotate=NANOOWL_ANNOTATE,
-        timeout=NANOOWL_TIMEOUT
-    )
+    # ---- 3) Call NanoOWL (HTTP) ----
+    # expects: status, body, nanoowl_http_sec
+    t0 = time.perf_counter()
+    try:
+        status, body, nanoowl_http_sec = _post_nanoowl_multipart(
+            endpoint=NANOOWL_ENDPOINT,
+            image_path=img_path,
+            prompts=prompts,
+            annotate=NANOOWL_ANNOTATE,
+            timeout=NANOOWL_TIMEOUT
+        )
+    except Exception as e:
+        status, body, nanoowl_http_sec = -1, str(e), None
+    t["nanoowl_http_sec"] = nanoowl_http_sec if nanoowl_http_sec is not None else (time.perf_counter() - t0)
+
     LAST["nanoowl_result"] = {"status": status, "body": body if not isinstance(body, str) else body[:2000]}
     print(f"[nanoowl] status={status} body_type={'json' if isinstance(body, dict) else 'text'}")
 
@@ -739,42 +803,65 @@ def from_vila():
         "annotate": int(NANOOWL_ANNOTATE),
         "result": body
     }
+
+    t0 = time.perf_counter()
+    json_ok = False
     try:
-        _update_sidecar_json(json_path, {"nanoowl": nano_payload})
-        print(f"[nanoowl][json] updated: {json_path}")
-
-        # ---- 4.1) If has BBOX, forward the FULL JSON to remote machine ----
-        try:
-            meta = _load_json(json_path)
-            if meta and _has_any_bbox(meta.get("nanoowl")):
-                if FORWARD_JSON_URL:
-                    # 1) take the local sidecar basename (no folders)
-                    sidecar_basename = os.path.basename(json_path)  # e.g. x0200...__11_31_15.json
-
-                    # 2) embed it in the payload so the receiver can save with the SAME name
-                    meta["_sidecar_basename"] = sidecar_basename
-
-                    # 3) (optional) also send as HTTP header for convenience
-                    headers = {"X-Sidecar-Basename": sidecar_basename}
-
-                    # 4) post
-                    s, b = _post_full_json(
-                        url=FORWARD_JSON_URL,
-                        obj=meta,
-                        timeout=FORWARD_JSON_TIMEOUT,
-                        retries=FORWARD_JSON_RETRIES,
-                        headers=headers,
-                    )
-                    print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
-
-        except Exception as e:
-            print(f"[forward-json][error] {e}")
-
+        json_ok = _update_sidecar_json(json_path, {"nanoowl": nano_payload})
+        print(f"[nanoowl][json] updated: {json_path} ok={json_ok}")
     except Exception as e:
         print(f"[nanoowl][json][error] failed to update {json_path}: {e}")
+    t["update_json_sec"] = time.perf_counter() - t0
 
-    # ---- 5) **Auto-annotate** and write <basename>_ann.jpg ----
-    ann_ok = _annotate_from_json(img_path, json_path)
+    # ---- 4.1) Forward JSON only if has bbox ----
+    t["forward_json_sec"] = 0.0
+    forward_status = None
+    try:
+        t0 = time.perf_counter()
+        meta = _load_json(json_path)
+        if meta and _has_any_bbox(meta.get("nanoowl")) and FORWARD_JSON_URL:
+            sidecar_basename = os.path.basename(json_path)
+            meta["_sidecar_basename"] = sidecar_basename
+            headers = {"X-Sidecar-Basename": sidecar_basename}
+
+            s, b = _post_full_json(
+                url=FORWARD_JSON_URL,
+                obj=meta,
+                timeout=FORWARD_JSON_TIMEOUT,
+                retries=FORWARD_JSON_RETRIES,
+                headers=headers,
+            )
+            forward_status = s
+            print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
+        t["forward_json_sec"] = time.perf_counter() - t0
+    except Exception as e:
+        t["forward_json_sec"] = time.perf_counter() - t0
+        print(f"[forward-json][error] {e}")
+
+    # ---- 5) Annotate ----
+    t0 = time.perf_counter()
+    try:
+        ann_ok = _annotate_from_json(img_path, json_path)
+    except Exception as e:
+        print(f"[annotate][error] {e}")
+        ann_ok = False
+    t["annotate_sec"] = time.perf_counter() - t0
+
+    # ---- Total + log summary ----
+    t["total_sec"] = time.perf_counter() - t_total0
+
+    # log one-liner (file+console)
+    try:
+        logger.info(
+            f"[{req_id}] DONE "
+            f"status={status} prompts={len(prompts)} ann={int(bool(ann_ok))} json_ok={int(bool(json_ok))} "
+            f"total={t['total_sec']:.3f} vllm={t['vllm_sec']:.3f} find={t['find_latest_sec']:.3f} "
+            f"nanoowl_http={t['nanoowl_http_sec']:.3f} json={t['update_json_sec']:.3f} "
+            f"fwd={t['forward_json_sec']:.3f} ann_t={t['annotate_sec']:.3f} "
+            f"img={os.path.basename(img_path)} forward_status={forward_status}"
+        )
+    except Exception:
+        pass
 
     return jsonify({
         "ok": True,
@@ -784,8 +871,10 @@ def from_vila():
         "nanoowl_status": status,
         "nanoowl_body": body,
         "sidecar_json": json_path,
-        "annotated": bool(ann_ok)
+        "annotated": bool(ann_ok),
+        "timings": t
     })
+
 
 def _find_specific_image(root_dir, filename):
     """
