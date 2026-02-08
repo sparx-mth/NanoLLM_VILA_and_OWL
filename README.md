@@ -153,6 +153,22 @@ docker run --rm -it \
   vllm_llama_3b:latest
 ```
 
+
+Inside the container, start the vLLM API server:
+
+```
+vllm serve espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 \
+  --dtype float16 \
+  --gpu-memory-utilization 0.5 \
+  --max-model-len 512 \
+  --max-num-batched-tokens 128 \
+  --max-num-seqs 1 \
+  --swap-space 0 \
+  --enforce-eager
+```
+
+***no need***
+Just if you want to check the llm:
 in terminal 2:
 ```bash
 cd GIT/NanoLLM_VILA_and_OWL/LLM

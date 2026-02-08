@@ -83,7 +83,7 @@ LAST = {
 VLLM_URL = None
 VLLM_MODEL = None
 VLLM_TIMEOUT = 20.0
-VLLM_MAX_TOKENS = 32
+VLLM_MAX_TOKENS = 512
 VLLM_TEMPERATURE = 0.1
 
 
@@ -93,6 +93,7 @@ VLLM_PROMPT_PREFIX = (
     "Remove colors, sizes, and adjectives "
     "Prefix each object with 'a' or 'an'. "
 )
+
 
 _VLLM_SESSION = requests.Session()
 
