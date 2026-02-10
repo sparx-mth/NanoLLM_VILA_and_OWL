@@ -145,3 +145,44 @@ python3 run_llm_with_web.py
 ```
 
 
+
+
+old - if you need llm jetson nano - 
+in terminal 1:
+```bash
+docker run --rm -it \
+  --runtime nvidia \
+  --network host \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm_llama_3b:latest
+```
+
+
+Inside the container, start the vLLM API server:
+
+```
+vllm serve espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 \
+  --dtype float16 \
+  --gpu-memory-utilization 0.5 \
+  --max-model-len 512 \
+  --max-num-batched-tokens 128 \
+  --max-num-seqs 1 \
+  --swap-space 0 \
+  --enforce-eager
+```
+
+***no need***
+Just if you want to check the llm:
+in terminal 2:
+```bash
+cd GIT/NanoLLM_VILA_and_OWL/LLM
+python3 prompt_converter_vllm.py
+```
+test 
+```bash
+
+
+curl -s http://192.168.131.21:5050/prompts \
+  -H "Content-Type: application/json" \
+  -d '{"caption":"two black suitcases with red and white labels on the ground"}'
+  ```
