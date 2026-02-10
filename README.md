@@ -1,79 +1,13 @@
 
 # **Pipeline Stages**
 
-on the computer:
-
-##  *APRIL TAG**
-first- get in to the docker:
-```bash
-
- docker run -it --rm     --net=host     --ipc=host     --env="DISPLAY"     --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw"     --name ros2_apriltag     ros2-humble-apriltag
-```
-
-```bash
-
-source src/./ros2_env.sh 
-```
-
-```bash
-ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/R1/camera/image_raw \
-  -r camera_info:=/R1/camera/camera_info \
-  -p family:=36h11 \
-  -p size:=2.00 \
-  -p publish_tf:=true \
-  -p qos_profile:=sensor_data \
-  --log-level debug
-```
-
-in another terminal run inside the backend run the video stream:
-```bash
-
-docker exec -it backend_id bash
-```
-```bash
-source src/./ros2_env.sh 
-```
-```bash
-cd src/examples/src
- python3 video_stream.py 
-```
-
-in another terminal inside the backend run the service call:
-```bash
-docker exec -it backend_id bash
-```
-```bash
-source src/./ros2_env.sh 
-```
-```bash
-ros2 service call /R1/start_capture std_srvs/srv/Trigger "{}"
-```
-
-
-## 1. **VILA API Server**
+## 1. ** VLLM WITH QWEN:**
 
 first- get in to the jetson:
 ```
 ssh -X user@192.168.131.22
 ```
-**Run inside the VILA container:**
-```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
 
-```
-
-Then start the API server:
-```bash
-python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://172.16.17.15:5050/from_vila
-```
-test:
-```bash 
-curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/home/user/jetson-containers/data/R1/R1_20260127_133752.jpg"}'
-```
-
-### VLLM WITH QWEN:
-***do not use***
 in terminal 1:
 ```bash
 docker run --rm -it \
@@ -99,12 +33,13 @@ vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
   --enforce-eager
 ```
 
-test:
+in terminal 2:
 ```
 cd /jetson-containers/data
 python3 -m http.server 9000 --bind 0.0.0.0
 ```
 
+test:
 ```
 curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
     "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
@@ -180,56 +115,12 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
- python3 comm_manager.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8081/describe   --force
+python3 comm_manager_vllm.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8080   --force
+
 
 ```
 
-## 6. **LLM Object List Extractor**
-
-Connect to Jetson #2:
-```bash
-ssh user@192.168.131.21
-```
-in terminal 1:
-```bash
-docker run --rm -it \
-  --runtime nvidia \
-  --network host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  vllm_llama_3b:latest
-```
-
-
-Inside the container, start the vLLM API server:
-
-```
-vllm serve espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 \
-  --dtype float16 \
-  --gpu-memory-utilization 0.5 \
-  --max-model-len 512 \
-  --max-num-batched-tokens 128 \
-  --max-num-seqs 1 \
-  --swap-space 0 \
-  --enforce-eager
-```
-
-***no need***
-Just if you want to check the llm:
-in terminal 2:
-```bash
-cd GIT/NanoLLM_VILA_and_OWL/LLM
-python3 prompt_converter_vllm.py
-```
-test 
-```bash
-
-
-curl -s http://192.168.131.21:5050/prompts \
-  -H "Content-Type: application/json" \
-  -d '{"caption":"two black suitcases with red and white labels on the ground"}'
-  ```
-
-## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
+## 6. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
 ssh nvidia@192.168.131.23

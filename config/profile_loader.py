@@ -73,7 +73,8 @@ def load_profile(
 
         comm_manager_url=svc_url("comm_manager"),
         vila_url=svc_url("vila_api"),
-        vila_describe_url=svc_url("vila_api", "/describe"),
+        vila_describe_url=svc_url("vila_api"),
+        #vila_describe_url=svc_url("vila_api", "/describe"),
         nanoowl_infer_url=svc_url("nanoowl", "/infer"),
         vllm_url=svc_url("vllm"),
         display_url=svc_url("display_server"),

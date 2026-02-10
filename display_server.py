@@ -77,14 +77,14 @@ class Item:
     json_rel: Optional[str]    # relative path from ROOT (may be None)
     ctime: float               # latest ctime among image/json
     text: str                  # extracted caption/answer (best-effort)
-    llm_terms: List[str] = None      #  LLM (nanoowl.prompts)
+    vlm_terms: List[str] = None      #  LLM (nanoowl.prompts)
     owl_labels: List[str] = None     # OWL labels
 
 # -----------------
 # Utilities
 # -----------------
 
-def _extract_llm_terms(doc: Dict) -> List[str]:
+def _extract_vlm_terms(doc: Dict) -> List[str]:
     try:
         terms = doc.get("nanoowl", {}).get("prompts", [])
         if isinstance(terms, list):
@@ -99,6 +99,7 @@ def _extract_llm_terms(doc: Dict) -> List[str]:
     except Exception:
         pass
     return []
+
 
 def _extract_owl_labels(doc: Dict) -> List[str]:
     labels = []
@@ -213,7 +214,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
         json_path = _best_json_for_image(img_path)
 
         text = ""
-        llm_terms: List[str] = []
+        vlm_terms: List[str] = []
         owl_labels: List[str] = []
         ctime_list = [img_path.stat().st_ctime]
 
@@ -228,7 +229,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
                 with open(json_path, "r", encoding="utf-8") as f:
                     doc = json.load(f)
                 text = _extract_text(doc)
-                llm_terms = _extract_llm_terms(doc) or []
+                vlm_terms: List = _extract_vlm_terms(doc) or []
                 owl_labels = _extract_owl_labels(doc) or []
                 ctime_list.append(json_path.stat().st_ctime)
             except Exception:
@@ -240,7 +241,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             json_rel=(str(json_path.relative_to(rel_root)) if json_path else None),
             ctime=max(ctime_list),
             text=text,
-            llm_terms=llm_terms,
+            vlm_terms=vlm_terms,
             owl_labels=owl_labels,
         ))
 
@@ -286,8 +287,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool,  static_
                 "image": f"/img/{it.image_rel}",
                 "json": (f"/meta/{it.json_rel}" if it.json_rel else None),
                 "ctime": it.ctime,
-                "text": it.text,
-                "llm_terms": it.llm_terms or [],
+                "vlm_terms": it.vlm_terms or [],
                 "owl_labels": it.owl_labels or [],
             }
             for it in items
@@ -447,9 +447,8 @@ INDEX_HTML = r"""
               <div class="ctime">${fmtTime(it.ctime)}</div>
             </div>
 
-            ${chipRow('LLM', it.llm_terms)}
+            ${chipRow('VLM', it.vlm_terms)}
 
-            <div class="text">${cleanText(it.text)}</div>
             <div class="row">
               ${it.json ? `<a class="btn" href="${it.json}" target="_blank">Open JSON</a>` : ''}
               <a class="btn" href="${it.image}" target="_blank">Open Image</a>
@@ -483,9 +482,8 @@ INDEX_HTML = r"""
       document.getElementById('modalTitle').textContent = it.basename + ' — ' + fmtTime(it.ctime);
 
       // LLM chips + caption (no OWL)
-      const llmRow = chipRow('LLM', it.llm_terms || []);
-      const caption = `<div style="margin-top:8px">${cleanText(it.text)}</div>`;
-      document.getElementById('modalText').innerHTML = llmRow + caption;
+      const vlmRow = chipRow('VLM', it.vlm_terms || []);
+      document.getElementById('modalText').innerHTML = vlmRow;
 
       // pretty JSON
       let pretty = '{}';

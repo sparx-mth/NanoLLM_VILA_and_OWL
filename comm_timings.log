@@ -57,3 +57,5 @@
 2026-02-08 17:31:42 | [1770564700-162446] DONE status=200 prompts=3 ann=1 json_ok=1 total=2.486 vllm=2.207 find=0.003 nanoowl_http=0.227 json=0.002 fwd=0.013 ann_t=0.033 img=test_1024.jpg forward_status=200
 2026-02-08 17:31:51 | [1770564708-162446] DONE status=200 prompts=4 ann=1 json_ok=1 total=3.312 vllm=3.072 find=0.002 nanoowl_http=0.187 json=0.001 fwd=0.012 ann_t=0.037 img=test_1500.jpg forward_status=200
 2026-02-08 17:31:59 | [1770564716-162446] DONE status=200 prompts=3 ann=1 json_ok=1 total=2.556 vllm=2.212 find=0.002 nanoowl_http=0.254 json=0.001 fwd=0.011 ann_t=0.076 img=test_hd.jpg forward_status=200
+2026-02-10 12:15:58 | [1770718558-1746501] DONE prompts_missing total=0.004 vllm=0.004
+2026-02-10 12:19:10 | [1770718750-1747177] DONE prompts_missing total=0.004 vllm=0.004
