@@ -17,8 +17,8 @@ source src/./ros2_env.sh
 
 ```bash
 ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/R2/camera/image_raw \
-  -r camera_info:=/R2/camera/camera_info \
+  -r image_rect:=/R1/camera/image_raw \
+  -r camera_info:=/R1/camera/camera_info \
   -p family:=36h11 \
   -p size:=2.00 \
   -p publish_tf:=true \
@@ -47,7 +47,7 @@ docker exec -it backend_id bash
 source src/./ros2_env.sh 
 ```
 ```bash
-ros2 service call /R2/start_capture std_srvs/srv/Trigger "{}"
+ros2 service call /R1/start_capture std_srvs/srv/Trigger "{}"
 ```
 
 
@@ -100,8 +100,12 @@ vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
 ```
 
 test:
-cd 
+```
+cd /jetson-containers/data
+python3 -m http.server 9000 --bind 0.0.0.0
+```
 
+```
 curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
     "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
     "messages": [{
@@ -113,7 +117,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: applicatio
     }],
     "max_tokens": 64
   }' | jq -r '.choices[0].message.content'
-
+```
 
 
 ## 3. **NanoOWL Object Detector**
@@ -159,7 +163,7 @@ ssh -X user@192.168.131.22
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server.py  \
- --root /home/user/jetson-containers/data/R2  \
+ --root /home/user/jetson-containers/data/R1  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
 
@@ -176,7 +180,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
- python3 comm_manager.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8080/describe   --force
+ python3 comm_manager.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8081/describe   --force
 
 ```
 
