@@ -147,7 +147,9 @@ python3 run_llm_with_web.py
 
 
 
-old - if you need llm jetson nano - 
+### old
+
+ - if you need llm jetson nano - 
 in terminal 1:
 ```bash
 docker run --rm -it \
