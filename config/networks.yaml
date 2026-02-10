@@ -2,7 +2,7 @@ profiles:
   adsl:
     hosts:
       agx1: { user: "user",  ip: "172.16.17.15" }
-      agx2: { user: "nvidia", ip: "172.16.17.6" }
+      agx2: { user: "nvidia", ip: "172.16.17.9" }
       nano: { user: "user",  ip: "172.16.17.14" }
     services:
       comm_manager:   { host: "agx1", port: 5050 }
