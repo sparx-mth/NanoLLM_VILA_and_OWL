@@ -88,6 +88,8 @@ Inside the container, start the vLLM API server:
 
 ```
 vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
+  --host 0.0.0.0 \
+  --port 8080 \
   --dtype float16 \
   --gpu-memory-utilization 0.5 \
   --max-model-len 512 \
@@ -96,6 +98,21 @@ vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
   --swap-space 0 \
   --enforce-eager
 ```
+
+test:
+cd 
+
+curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
+    "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type":"text","text":"Describe in a short list JUST the objects in the image."},
+        {"type":"image_url","image_url":{"url":"http://172.16.17.15:9000/R1/latest/R1_20260127_133755.jpg"}}
+      ]
+    }],
+    "max_tokens": 64
+  }' | jq -r '.choices[0].message.content'
 
 
 
