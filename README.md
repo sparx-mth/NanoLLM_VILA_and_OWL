@@ -26,12 +26,18 @@ vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
   --port 8080 \
   --dtype float16 \
   --gpu-memory-utilization 0.5 \
-  --max-model-len 512 \
+  --max-model-len 2048 \
   --max-num-batched-tokens 128 \
-  --max-num-seqs 1 \
+  --max-num-seqs 4 \
   --swap-space 0 \
   --enforce-eager
 ```
+
+** if its not working, try:
+  --max-model-len 512 
+  --max-num-seqs 1
+  --gpu-memory-utilization 0.4
+
 
 in terminal 2:
 ```
@@ -119,8 +125,20 @@ python3 comm_manager_vllm.py --profile adsl   --vllm-model espressor/meta-llama.
 
 
 ```
+## 6. **capture_on_enter.py**
+irst- get in to the jetson:
 
-## 6. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
+```
+ssh -X user@192.168.131.22
+```
+**Run:**
+```bash
+cd ~/GIT/NanoLLM_VILA_and_OWL
+python3 capture_on_enter.py --rows 2 --cols 2 --overlap 0.3
+```
+
+
+## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
 Connect to Jetson #3:
 ```bash
 ssh nvidia@192.168.131.23
