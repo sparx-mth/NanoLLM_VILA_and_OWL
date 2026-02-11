@@ -612,6 +612,7 @@ def process_folder(
     folder: str,
     new_folder: str,
     endpoint: str,
+    depth_endpoint: str,
     path_src: Optional[str],
     path_dst: Optional[str],
     timeout_s: float,
@@ -724,6 +725,7 @@ def process_folder(
                 "result": body
             }
             
+
             # Update new_js with NanoOWL results
             new_js["nanoowl"] = nano_payload
 
@@ -735,9 +737,43 @@ def process_folder(
                 "response": response_str,
             })
             
+
+
+            # --- 5. DEPTH ANYTHING ---
+            if depth_endpoint and body:
+                try:
+                    print(f"[worker] Sending NanoOWL body to Depth at {depth_endpoint}...")
+                    
+                    current_img_path = str(dest_jpg_path)
+                    
+                    with open(current_img_path, "rb") as f_img:
+                        files = {
+                            "image": (
+                                os.path.basename(current_img_path), 
+                                f_img,
+                                "image/jpeg",
+                            ),
+                            "detections": (
+                                "detections.json",
+                                json.dumps(body),
+                                "application/json",
+                            ),
+                        }
+                    
+                        r_depth = requests.post(depth_endpoint, files=files, timeout=30)
+                        
+                        if r_depth.status_code == 200:
+                            new_js["DEPTH_ANYTHING"] = r_depth.json()
+                            print("[worker] Depth data added!")
+                        else:
+                            print(f"[worker] Depth failed: {r_depth.status_code} {r_depth.text}")
+                            
+                except Exception as e:
+                    print(f"[worker] Depth error: {e}")          
+
             done += 1
         else:
-            failed += 1
+            failed += 1  
 
         # --- Final Write and Annotation (Critical Fix) ---
         try:
@@ -795,6 +831,7 @@ def run_process_once(args):
         folder=latest.as_posix(),
         new_folder=new_folder_path.as_posix(),
         endpoint=args.endpoint,
+        depth_endpoint=args.depth_endpoint,
         path_src=args.path_src,
         path_dst=args.path_dst,
         timeout_s=args.vlm_timeout,
@@ -881,6 +918,11 @@ def main():
                    help="Timeout (sec) for NanoOWL POST")
     p.add_argument("--nanoowl-annotate", type=int, default=0,
                    help="Pass annotate=0/1 to NanoOWL")
+    
+    #depth
+
+    p.add_argument("--depth-endpoint", default="http://127.0.0.1:5070/bbox_depth", 
+               help="Endpoint for Depth Anything service")
 
     # send json
     p.add_argument("--forward-json-url", default="http://172.17.16.9:9090/ingest",
