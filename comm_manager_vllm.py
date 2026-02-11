@@ -24,7 +24,7 @@ Notes:
 
 
 run command both process folder and comm original
-python3 comm_manager_2.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint http://192.168.131.21:5050/prompts       --captures-root /home/user/jetson-containers/data/R2/    --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --vlm-timeout 60
+python3 comm_manager.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint http://192.168.131.21:5050/prompts       --captures-root /home/user/jetson-containers/data/R2/    --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --vlm-timeout 60
 
 """
 import datetime
@@ -93,12 +93,6 @@ VLLM_MAX_TOKENS = 512
 VLLM_TEMPERATURE = 0.1
 
 
-VLLM_PROMPT_PREFIX = (
-    "Extract unique object names from the text."
-    "Return only a lowercase JSON array. No extra text. "
-    "Remove colors, sizes, and adjectives "
-    "Prefix each object with 'a' or 'an'. "
-)
 
 
 _VLLM_SESSION = requests.Session()
@@ -188,19 +182,26 @@ def _to_image_url(image_ref: str) -> str:
     s = (image_ref or "").strip()
     if s.startswith("http://") or s.startswith("https://"):
         return s
-
+    
     # assume local file path
     if not os.path.isfile(s):
         raise FileNotFoundError(f"Image not found: {s}")
 
-    mime, _ = mimetypes.guess_type(s)
-    if not mime:
-        mime = "image/jpeg"
+    img = cv2.imread(s)
+    if img is None:
+        raise ValueError(f"Failed to decode image: {s}")
 
-    with open(s, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
+    target_dim = (640, 360) 
+    img_small = cv2.resize(img, target_dim, interpolation=cv2.INTER_AREA)
 
-    return f"data:{mime};base64,{b64}"
+    success, buffer = cv2.imencode('.jpg', img_small, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    
+    if not success:
+        raise ValueError("Failed to encode resized image")
+
+    b64 = base64.b64encode(buffer).decode("ascii")
+    
+    return f"data:image/jpeg;base64,{b64}"
 
 def _is_in_ann_folder(fp: str) -> bool:
     p = Path(fp)

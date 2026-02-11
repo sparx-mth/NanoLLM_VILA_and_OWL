@@ -14,8 +14,8 @@ from pathlib import Path
 DEFAULT_ROOT_DIR = "/home/user/jetson-containers/data/R1/"
 DEFAULT_ROWS = 2
 DEFAULT_COLS = 2
-DEFAULT_WIDTH = 640
-DEFAULT_HEIGHT = 360
+DEFAULT_WIDTH = 0
+DEFAULT_HEIGHT = 0
 DEFAULT_OVERLAP = 0.1  # 10%
 
 # Global variables
@@ -130,30 +130,34 @@ def capture_image():
             # Crop
             tile = frame_full[y1:y2, x1:x2]
             if tile.size == 0: continue
+
+            if args.width > 0 and args.height > 0:
+                tile_final = cv2.resize(tile, (args.width, args.height), interpolation=cv2.INTER_AREA)
+            else:
+                tile_final = tile
+
             
-            # Resize
-            tile_resized = cv2.resize(tile, (args.width, args.height), interpolation=cv2.INTER_AREA)
-            
-            # Save
+            #  Save
             tile_name = f"frame_{base_ts}_tile_{r}_{c}.jpg"
             tile_path = session_folder_path / tile_name
             json_path = session_folder_path / f"frame_{base_ts}_tile_{r}_{c}.json"
             
-            cv2.imwrite(str(tile_path), tile_resized)
+            cv2.imwrite(str(tile_path), tile_final)
             
             meta = {
                 "pose": {}, 
                 "image": tile_name, 
                 "tile_index": [r, c],
                 "original_crop": [x1, y1, x2, y2],
-                "overlap": overlap
+                "overlap": overlap,
+                "resolution": tile_final.shape[:2]
             }
             with open(json_path, 'w') as f:
                 json.dump(meta, f, indent=2)
             
             saved_count += 1
 
-    print(f"\r[Captured] {saved_count} tiles -> {session_folder_path.name}    ", end="")
+        print(f"\r[Captured] {saved_count} tiles -> {session_folder_path.name}    ", end="")
 
 # --- Main ---
 def main():
