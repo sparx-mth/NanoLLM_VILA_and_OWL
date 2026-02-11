@@ -725,6 +725,7 @@ def process_folder(
         base = os.path.splitext(jpg)[0]
         old_json_path = os.path.join(folder, base + ".json")
         new_json_path = new_folder_path / f"{base}.json"
+
         
         js = load_json(old_json_path)
         
@@ -809,6 +810,23 @@ def process_folder(
             with open(new_json_path, "w") as f:
                 json.dump(new_js, f, indent=2)
             print(f"Dumped updated JSON to {new_json_path}")
+
+
+            try:
+                if _has_any_bbox(new_js.get("nanoowl")) and FORWARD_JSON_URL:
+                    sidecar_basename = os.path.basename(str(new_json_path))
+                    new_js["_sidecar_basename"] = sidecar_basename
+                    headers = {"X-Sidecar-Basename": sidecar_basename}
+                    s, b = _post_full_json(
+                        FORWARD_JSON_URL,
+                        new_js,
+                        FORWARD_JSON_TIMEOUT,
+                        FORWARD_JSON_RETRIES,
+                        headers=headers
+                    )
+                    print("[forward-json]", s, b)
+            except Exception as e:
+                print("[forward-json][error]", e)
 
             # Call Annotate via Symlink to bypass path assertions
             if res.ok and new_js.get("nanoowl"):
