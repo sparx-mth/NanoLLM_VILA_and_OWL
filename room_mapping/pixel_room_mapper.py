@@ -41,7 +41,43 @@ DEFAULT_DISTANCE_M = 5.0
 # ======================================================================
 
 class DynamicTileManager:
-    """Manages dynamic tile types."""
+    """Manages dynamic tile types and their display colours."""
+
+    # 4 special tiles + 25 maximally-distinct object colours
+    # Chosen for perceptual distance — no two neighbours look alike.
+    PALETTE = [
+        # --- special tiles (0-3) ---
+        (240, 240, 240),  # 0  free_space  – almost white
+        ( 45,  45,  45),  # 1  wall        – dark charcoal
+        (  0, 210,  80),  # 2  camera      – vivid green
+        (160, 100,  40),  # 3  door        – warm brown
+        # --- object colours (4-28) ---
+        (230,  25,  75),  # 4  – crimson red
+        (  0, 130, 200),  # 5  – strong blue
+        (255, 190,   0),  # 6  – golden yellow
+        (145,  30, 180),  # 7  – purple
+        (245, 130,  48),  # 8  – orange
+        ( 70, 240, 240),  # 9  – cyan
+        (240,  50, 230),  # 10 – magenta / hot pink
+        ( 210, 245,  60),  # 11 – lime
+        (  0, 128, 128),  # 12 – teal
+        (170, 110,  40),  # 13 – chocolate
+        (128, 128,   0),  # 14 – olive
+        (  0,  75, 145),  # 15 – navy blue
+        (128,   0,   0),  # 16 – maroon
+        (255, 215, 180),  # 17 – peach / apricot
+        (170, 255, 195),  # 18 – mint
+        (230, 190, 255),  # 19 – lavender
+        (255, 250, 200),  # 20 – cream
+        ( 60, 180,  75),  # 21 – forest green
+        (220, 190, 255),  # 22 – soft violet
+        (255, 127,  80),  # 23 – coral
+        (  0, 200, 160),  # 24 – jade / aquamarine
+        (188, 143, 143),  # 25 – rosy brown
+        ( 75,   0, 130),  # 26 – indigo
+        (255,  99,  71),  # 27 – tomato red
+        (  0, 191, 255),  # 28 – deep sky blue
+    ]
 
     def __init__(self, existing_registry=None):
         self.FREE_SPACE = 0
@@ -62,6 +98,32 @@ class DynamicTileManager:
             self.next_tile_id = 4
 
         self.id_to_name = {v: k for k, v in self.tile_registry.items()}
+
+    # --- colour helpers ------------------------------------------------
+
+    def get_color(self, tile_id: int) -> Tuple[int, int, int]:
+        """Return RGB tuple for *tile_id*.  Beyond the palette → random."""
+        if tile_id < len(self.PALETTE):
+            return self.PALETTE[tile_id]
+        # Deterministic but well-spread random colour for overflow IDs
+        import hashlib
+        h = hashlib.md5(str(tile_id).encode()).digest()
+        return (h[0], h[1], h[2])
+
+    def get_all_colors(self) -> Dict[int, Tuple[int, int, int]]:
+        """Map every registered tile ID → RGB tuple."""
+        return {tid: self.get_color(tid)
+                for tid in self.tile_registry.values()}
+
+    def get_color_registry_hex(self) -> Dict[str, str]:
+        """Tile name → ``#RRGGBB`` string (for JSON export)."""
+        out = {}
+        for name, tid in self.tile_registry.items():
+            r, g, b = self.get_color(tid)
+            out[name] = f"#{r:02x}{g:02x}{b:02x}"
+        return out
+
+    # --- tile registration ---------------------------------------------
 
     def get_tile_type(self, object_class: str) -> int:
         obj_key = object_class.lower().strip()
@@ -93,50 +155,64 @@ class DynamicTileManager:
 # Wall geometry extraction  (camera-frame measurements)
 # ======================================================================
 
-def extract_room_geometry(scan_data: Dict) -> Optional[Dict]:
+def extract_room_geometry(scan_data: Dict,
+                          square_room: bool = True) -> Optional[Dict]:
     """
     Extract room measurements from a Depth Anything scan with ``wall`` data.
+
+    Args:
+        scan_data:   Full JSON scan dict.
+        square_room: If True (default), average the left/middle/right wall
+                     depths and use that value for **both** depth and width
+                     (square room).  If False, use pinhole projection for
+                     wall width (legacy behaviour).
 
     Returns camera-frame measurements (orientation-agnostic)::
 
         {
             "wall_depth_m":     float,  # distance to opposite wall
-            "wall_width_m":     float,  # lateral span of opposite wall
-            "camera_lateral_m": float,  # camera offset from left-of-image edge
+            "wall_width_m":     float,  # lateral span (= depth when square)
+            "camera_lateral_m": float,  # camera offset from left edge
         }
 
     or ``None`` if the scan has no usable wall data.
     """
-    if "wall" not in scan_data or "camera" not in scan_data:
+    da = scan_data.get("DEPTH_ANYTHING")
+    if da is None or "wall" not in da or "camera" not in da:
         return None
 
-    wall = scan_data["wall"]
-    cam = scan_data["camera"]
+    wall = da["wall"]
+    cam = da["camera"]
 
     for key in ("left", "right"):
-        if key not in wall or not wall[key].get("valid", False):
+        if key not in wall:
             return None
 
-    fx = cam.get("fx", 500)
-    cx = cam.get("cx", cam.get("width", 640) / 2)
-
-    # Average depth of all valid samples
+    # Average depth of all available samples
     depths = []
     for key in ("left", "middle", "right"):
         entry = wall.get(key)
-        if entry and entry.get("valid", False):
+        if entry and "depth_m" in entry:
             depths.append(entry["depth_m"])
     wall_depth = sum(depths) / len(depths)
 
-    # Project outer bbox edges to metres at wall depth (pinhole model)
-    left_pixel = wall["left"]["bbox"][0]
-    right_pixel = wall["right"]["bbox"][2]
+    if square_room:
+        # Square room: side = avg depth, camera centred
+        wall_width = wall_depth
+        camera_lateral = wall_width / 2
+    else:
+        # Legacy: project outer bbox edges via pinhole model
+        fx = cam.get("fx", 500)
+        cx = cam.get("cx", cam.get("width", 640) / 2)
 
-    x_left_m = ((left_pixel - cx) / fx) * wall_depth
-    x_right_m = ((right_pixel - cx) / fx) * wall_depth
+        left_pixel = wall["left"]["bbox"][0]
+        right_pixel = wall["right"]["bbox"][2]
 
-    wall_width = x_right_m - x_left_m
-    camera_lateral = -x_left_m
+        x_left_m = ((left_pixel - cx) / fx) * wall_depth
+        x_right_m = ((right_pixel - cx) / fx) * wall_depth
+
+        wall_width = x_right_m - x_left_m
+        camera_lateral = -x_left_m
 
     return {
         "wall_depth_m": round(wall_depth, 4),
@@ -315,7 +391,7 @@ class PixelRoomMapper:
 
     @staticmethod
     def _is_depth_anything_format(scan_data: Dict) -> bool:
-        return "camera" in scan_data and "objects" in scan_data
+        return "DEPTH_ANYTHING" in scan_data
 
     @staticmethod
     def _get_object_depth(detection: Dict) -> float:
@@ -450,15 +526,18 @@ class PixelRoomMapper:
         camera_intrinsics = None
 
         if self._is_depth_anything_format(scan_data):
-            cam = scan_data["camera"]
+            da = scan_data["DEPTH_ANYTHING"]
+            cam = da["camera"]
             camera_intrinsics = {
                 "fx": cam.get("fx", 500), "fy": cam.get("fy", 500),
                 "cx": cam.get("cx", cam.get("width", 640) / 2),
                 "cy": cam.get("cy", cam.get("height", 480) / 2),
             }
-            frame_width = cam.get("width", 640)
-            frame_height = cam.get("height", 480)
-            detections = scan_data.get("objects", [])
+            # Image resolution from nanoowl
+            owl_img = scan_data.get("nanoowl", {}).get("result", {}).get("image", {})
+            frame_width = owl_img.get("width", cam.get("width", 640))
+            frame_height = owl_img.get("height", cam.get("height", 480))
+            detections = da.get("objects", [])
 
         elif 'nanoowl' in scan_data and 'result' in scan_data['nanoowl']:
             result = scan_data['nanoowl']['result']
@@ -580,7 +659,8 @@ class PixelRoomMapper:
     # ------------------------------------------------------------------
 
     def save(self, json_file="data/unified_rooms.json",
-             map_file="data/house_map.txt"):
+             map_file="data/house_map.txt",
+             image_file="data/house_map.png"):
         grid = self.create_grid_map()
 
         cx, cy = self.camera_to_grid()
@@ -609,15 +689,88 @@ class PixelRoomMapper:
             "grid_resolution": self.grid_resolution,
             "rooms": rooms,
             "tile_registry": self.tiles.get_all_tiles(),
+            "tile_colors": self.tiles.get_color_registry_hex(),
         }
 
         with open(json_file, 'w') as f:
             json.dump(output, f, indent=2)
         np.savetxt(map_file, grid, fmt='%d')
 
+        # Render colour image
+        if image_file:
+            self.save_image(grid, image_file)
+
         print(f"\nSaved {len(self.all_objects)} objects to room '{self.room_name}'")
         print(f"Total rooms: {len(rooms)}")
         print(f"Tile types: {len(self.tiles.tile_registry)} total")
+
+    # ------------------------------------------------------------------
+    # Image rendering
+    # ------------------------------------------------------------------
+
+    def save_image(self, grid: np.ndarray, filename: str = "data/house_map.png",
+                   cell_px: int = 16, legend: bool = True):
+        """
+        Render the grid to a PNG with the palette colours and a legend.
+
+        Args:
+            grid:     2D int array (from ``create_grid_map``).
+            filename: Output path.
+            cell_px:  Pixels per grid cell.
+            legend:   If True, draw a colour legend to the right.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+
+        h, w = grid.shape
+        map_w = w * cell_px
+        map_h = h * cell_px
+
+        # --- legend layout ---
+        used_ids = sorted(set(grid.flat))
+        legend_w = 0
+        entry_h = max(cell_px, 18)
+        if legend:
+            # Measure text widths to size the panel
+            max_label = max(
+                (len(self.tiles.id_to_name.get(tid, f"id_{tid}")) for tid in used_ids),
+                default=6)
+            legend_w = entry_h + 8 + max_label * 9 + 20   # swatch + gap + text + pad
+
+        img = Image.new("RGB", (map_w + legend_w, max(map_h, len(used_ids) * entry_h + 20)),
+                         (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+
+        # --- draw grid ---
+        for y in range(h):
+            for x in range(w):
+                tid = int(grid[y, x])
+                colour = self.tiles.get_color(tid)
+                x0, y0 = x * cell_px, y * cell_px
+                draw.rectangle([x0, y0, x0 + cell_px - 1, y0 + cell_px - 1],
+                               fill=colour)
+
+        # --- draw legend ---
+        if legend:
+            lx = map_w + 10
+            ly = 10
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+            except Exception:
+                font = ImageFont.load_default()
+
+            for tid in used_ids:
+                colour = self.tiles.get_color(tid)
+                name = self.tiles.id_to_name.get(tid, f"id_{tid}")
+                # colour swatch
+                draw.rectangle([lx, ly, lx + entry_h - 2, ly + entry_h - 2], fill=colour,
+                               outline=(0, 0, 0))
+                # label
+                draw.text((lx + entry_h + 4, ly + 1), name, fill=(0, 0, 0), font=font)
+                ly += entry_h
+
+        os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+        img.save(filename)
+        print(f"  Image saved: {filename}")
 
 
 # ======================================================================
@@ -637,9 +790,23 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
                   room_bbox=None, room_name="main_room",
                   camera_wall="north",
                   camera_position_along_wall=None,
-                  grid_resolution=0.05):
+                  grid_resolution=None,
+                  grid_cells=51,
+                  square_room=True,
+                  room_width_m=None,
+                  room_height_m=None):
     """
     Process all detection files.
+
+    Args:
+        grid_resolution: Metres per cell.  If ``None`` (default), computed
+                         automatically from ``grid_cells``.
+        grid_cells:      Number of cells per room side (default 51).
+                         Ignored when ``grid_resolution`` is given explicitly.
+        square_room:     If True (default), room is square — side length =
+                         average wall depth.
+        room_width_m:    Override room width  (metres).  ``None`` = auto.
+        room_height_m:   Override room height (metres).  ``None`` = auto.
 
     1. Pre-scan for first JSON with ``wall`` data → auto room dimensions.
     2. ``compute_room_config`` maps wall + camera_wall → room coords + yaw.
@@ -663,7 +830,7 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
         try:
             with open(jf, 'r') as f:
                 data = json.load(f)
-            geom = extract_room_geometry(data)
+            geom = extract_room_geometry(data, square_room=square_room)
             if geom is not None:
                 wall_geometry = geom
                 print(f"  Wall data from {os.path.basename(jf)}:")
@@ -680,6 +847,19 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
     config = compute_room_config(wall_geometry, camera_wall,
                                  camera_position_along_wall)
     config_yaw = config["yaw"]
+
+    # Allow explicit overrides of room dimensions
+    if room_width_m is not None:
+        config["room_width_m"] = room_width_m
+    if room_height_m is not None:
+        config["room_height_m"] = room_height_m
+
+    # Derive grid_resolution from grid_cells if not given explicitly
+    if grid_resolution is None:
+        room_side = max(config["room_width_m"], config["room_height_m"])
+        grid_resolution = room_side / grid_cells
+        print(f"  Grid: {grid_cells}×{grid_cells} cells, "
+              f"resolution={grid_resolution:.4f} m/cell")
 
     # ------------------------------------------------------------------
     # 3. Create mapper
@@ -745,11 +925,14 @@ def main():
     # ║  CONFIGURATION — edit these values for your setup              ║
     # ╚══════════════════════════════════════════════════════════════════╝
 
+    # ---- Mode ----
+    #   "standalone"   = one large room (default)
+    #   "existing_map" = overlay onto an existing house map
     mode = "standalone"
-    existing_map = os.path.join(BASE_PATH, "room_mapping/office_map.txt")
-    existing_json = os.path.join(BASE_PATH, "room_mapping/office.json")
-    room_bbox = (23, 10, 40, 24)
-    room_name = "MAMAD"
+    existing_map = None      # e.g. os.path.join(BASE_PATH, "room_mapping/office_map.txt")
+    existing_json = None     # e.g. os.path.join(BASE_PATH, "room_mapping/office.json")
+    room_bbox = None         # e.g. (23, 10, 40, 24)
+    room_name = "main_room"
 
     # ---- Camera wall ----
     #
@@ -759,7 +942,7 @@ def main():
     #         │               │
     #         └──── south ────┘
     #
-    camera_wall = "west"    # "north" / "south" / "east" / "west"
+    camera_wall = "north"    # "north" / "south" / "east" / "west"
 
     # ---- Position along the wall (metres) ----
     #   North/South → distance from WEST wall  (room X)
@@ -768,8 +951,14 @@ def main():
     #   None = middle of the wall (default)
     camera_position_along_wall = None
 
-    # ---- Grid resolution ----
-    grid_resolution = 0.05
+    # ---- Grid ----
+    grid_cells = 51          # cells per room side (default 51×51)
+    grid_resolution = None   # m/cell — None = auto from grid_cells
+
+    # ---- Room shape ----
+    square_room = True       # True = square room (side = avg wall depth)
+    room_width_m = None      # override room width  (metres), None = auto
+    room_height_m = None     # override room height (metres), None = auto
 
     # ================================================================
 
@@ -777,11 +966,14 @@ def main():
         mode = "existing_map"
         print(f"Mode: Existing Map  |  Room: {room_name}  |  bbox: {room_bbox}")
     else:
-        print(f"Mode: Standalone  |  Room: {room_name}")
+        shape = "square" if square_room else "rectangular"
+        print(f"Mode: Standalone ({shape})  |  Room: {room_name}  |  "
+              f"Grid: {grid_cells}×{grid_cells}")
 
     print(f"Camera wall: {camera_wall}  |  "
           f"Position along wall: {camera_position_along_wall or 'middle'}")
-    print(f"Grid resolution: {grid_resolution} m/cell")
+    if grid_resolution is not None:
+        print(f"Grid resolution: {grid_resolution} m/cell")
     print("\nMonitoring for detection files…  (Ctrl+C to stop)\n")
 
     bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
@@ -798,6 +990,10 @@ def main():
                         camera_wall=camera_wall,
                         camera_position_along_wall=camera_position_along_wall,
                         grid_resolution=grid_resolution,
+                        grid_cells=grid_cells,
+                        square_room=square_room,
+                        room_width_m=room_width_m,
+                        room_height_m=room_height_m,
                     )
                     if n > 0:
                         print(f"Processed {n} files → unified_rooms.json + house_map.txt")

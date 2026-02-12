@@ -121,12 +121,13 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 comm_manager_vllm.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8080   --force
+python3 comm_manager_vllm.py --profile robotican   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://192.168.131.22:8080  --host 192.168.131.22  --force --depth-endpoint http://192.168.131.22:5070/bbox_depth
+
 
 
 ```
 ## 6. **capture_on_enter.py**
-irst- get in to the jetson:
+first- get in to the jetson:
 
 ```
 ssh -X user@192.168.131.22
@@ -136,6 +137,7 @@ ssh -X user@192.168.131.22
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 capture_on_enter.py --rows 2 --cols 2 --overlap 0.3
 ```
+
 
 
 ## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
@@ -162,6 +164,30 @@ pip3 install requirements.txt
 python3 run_llm_with_web.py
 ```
 
+## 8. Depth Anythnig v3 
+**Build (colcon)**
+From your workspace root:
+```bash
+cd ~/depth_anything_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select depth_anything_v3 --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+**Run the HTTP server**
+```bash
+ros2 run depth_anything_v3 depth_anything_http_server \
+  --model /home/user/depth_anything_ws/src/ros2-depth-anything-v3-trt/onnx/DA3-SMALL/DA3-SMALL.onnx \
+  --camera-yaml /home/user/depth_anything_ws/src/ros2-depth-anything-v3-trt/camera_info_4k.yaml \
+  --host 0.0.0.0 --port 5070 \
+  --save-depth 1 \
+  --save-every 1 \
+  --save-max-depth 10.0
+```
+
+### Notes:
+- Saving happens **per request** (not per second). `--save-every N` saves every N-th request.
+- The save directory is derived from the request's `image_dir`:
+  if `image_dir=/a/b/c` then depth images go under `/a/b/c_depth/`.
 
 
 
