@@ -492,8 +492,8 @@ INDEX_HTML = r"""
 
     /* chips for LLM terms */
     .chips { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-    .chips-title { color:#9ca3af; font-size:30px; margin-right:4px; }
-    .chip { display:inline-block; font-size:30px; padding:2px 8px; border-radius:999px; border:1px solid #1f2937; background:#0b1325; color:#e5e7eb; }
+    .chips-title { color:#9ca3af; font-size:20px; margin-right:4px; }
+    .chip { display:inline-block; font-size:20px; padding:2px 8px; border-radius:999px; border:1px solid #1f2937; background:#0b1325; color:#e5e7eb; }
 
     .footer { color:#9ca3af; font-size:12px; padding:6px 18px 14px; text-align:center; }
 
@@ -512,8 +512,8 @@ INDEX_HTML = r"""
     .puzzle-card { background:var(--card); border:1px solid #1f2937; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,.25); }
     .puzzle-head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid #1f2937; }
     .puzzle-title { font-size:14px; color:#93c5fd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:75%; }
-    .puzzle-grid { display:grid; gap:0px; padding:0px; background:#0b1220; border-radius: 14px; overflow: hidden; }
-    .tile { position:relative; border-radius:0px; overflow:hidden; border:0px; background:#0a0f1b; }
+    .puzzle-grid { display:grid; gap:4px; padding:10px; background:#0b1220; }
+    .tile { position:relative; border-radius:10px; overflow:hidden; border:1px solid #111827; background:#0a0f1b; }
     .tile img { width:100%; height:auto; object-fit:cover; display:block; cursor:pointer; }
     .tile-badge {
     position:absolute; left:8px; top:8px;
@@ -542,7 +542,6 @@ INDEX_HTML = r"""
     .tile-media { 
     position:relative; 
     }
-    .tile-meta { display:none; }
 
     .tile-meta{
     padding: 8px 10px 10px;
@@ -628,19 +627,6 @@ INDEX_HTML = r"""
 
         const firstTile = (g.tiles || [])[0] || {};
         const desc = cleanText(firstTile.text || '');
-
-        const seen = new Set();
-        const allTerms = [];
-        (g.tiles || []).forEach(t => {
-        (t.vlm_terms || []).forEach(x => {
-            const s = String(x || '').trim();
-            if(!s) return;
-            if(seen.has(s)) return;
-            seen.add(s);
-            allTerms.push(s);
-        });
-        });
-
         const tilesHtml = (g.tiles || []).map(t => `
         <div class="tile">
             <div class="tile-media tile-overlay ${t.depth ? 'has-depth' : ''}">
@@ -651,10 +637,12 @@ INDEX_HTML = r"""
             <img class="ann-img" src="${t.image}" alt="[${t.r},${t.c}]"
                 onclick="openModal(${encodeURIComponent(JSON.stringify(JSON.stringify(t)))})" />
             </div>
+
+            <div class="tile-meta">
+            ${chipRow('VLM', t.vlm_terms || [])}
+            </div>
         </div>
         `).join('');
-
-        const groupVlmRow = chipRow('VLM', allTerms);
 
         return `
         <div class="puzzle-card">
@@ -667,8 +655,7 @@ INDEX_HTML = r"""
             ${tilesHtml || '<div style="padding:10px;color:#9ca3af">No tiles</div>'}
             </div>
 
-            ${groupVlmRow ? `<div style="padding:10px 14px;">${groupVlmRow}</div>` : ''}
-
+            ${desc ? `<div class="tile-desc">${desc}</div>` : ''}
         </div>
         `;
     }).join('');

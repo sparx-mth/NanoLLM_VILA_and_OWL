@@ -82,26 +82,11 @@ class Item:
     text: str                  # extracted caption/answer (best-effort)
     vlm_terms: List[str] = None      #  LLM (nanoowl.prompts)
     owl_labels: List[str] = None     # OWL labels
-    depth_rel: Optional[str] = None # relative path to depth image (if exists)
-
 
 # -----------------
 # Utilities
 # -----------------
 
-def _depth_variant(path: Path) -> Optional[Path]:
-    parent = path.parent
-    stem = path.stem
-
-    sibling_depth_dir = parent.with_name(parent.name + "_depth")
-    if sibling_depth_dir.exists() and sibling_depth_dir.is_dir():
-        for cand in [
-            sibling_depth_dir / (stem + "_depth.png"),
-            sibling_depth_dir / (stem + "_depth.jpg"),
-        ]:
-            if cand.exists():
-                return cand
-    return None
 
 def _group_tiles(items: List[Item], root: Path) -> List[dict]:
     """
@@ -156,8 +141,6 @@ def _group_tiles(items: List[Item], root: Path) -> List[dict]:
             "vlm_terms": it.vlm_terms or [],
             "owl_labels": it.owl_labels or [],
             "ctime": it.ctime,
-            "depth": (f"/img/{it.depth_rel}" if getattr(it, "depth_rel", None) else None),
-
         })
     # finalize rows/cols and sort tiles
     out = []
@@ -289,15 +272,9 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
         if not _is_image(img_path):
             continue
 
-        # skip depth images (they should be attached to the RGB/ANN tile, not shown as standalone)
-        if img_path.parent.name.endswith("_depth") or img_path.stem.endswith("_depth"):
-            continue
-
         if img_path.stem.endswith("_ann"):
             continue
-
         print(f"[_collect_items] Found image: {img_path}")
-
         ann_path = _ann_variant(img_path)
         use_path = ann_path if ann_path.exists() else img_path
 
@@ -330,9 +307,6 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             except Exception:
                 text = "(failed to read/parse JSON)"
 
-        depth_path = _depth_variant(img_path)
-        depth_rel = str(depth_path.relative_to(rel_root)) if depth_path else None
-
         items.append(Item(
             basename=img_path.stem, 
             image_rel=str(use_path.relative_to(rel_root)),                 
@@ -341,8 +315,6 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             text=text,
             vlm_terms=vlm_terms,
             owl_labels=owl_labels,
-            depth_rel=depth_rel,
-
         ))
 
     items.sort(key=lambda it: it.ctime, reverse=True)
@@ -372,6 +344,7 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool, static_d
         if latest_only:
             last_dir = _latest_run_dir(root)
             if last_dir is not None:
+                # אם latest הוא symlink – אפשר להשאיר את ה-assert, אחרת תוריד אותו
                 # assert last_dir.is_symlink(), f"Latest run directory {last_dir} is not a symlink!"
                 scan_root = last_dir.resolve()
                 current_run = str(last_dir.relative_to(root))
@@ -385,8 +358,6 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool, static_d
                 "ctime": it.ctime,
                 "vlm_terms": it.vlm_terms or [],
                 "owl_labels": it.owl_labels or [],
-                "depth": (f"/img/{it.depth_rel}" if it.depth_rel else None),
-
             }
             for it in items
         ]
@@ -492,8 +463,8 @@ INDEX_HTML = r"""
 
     /* chips for LLM terms */
     .chips { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-    .chips-title { color:#9ca3af; font-size:30px; margin-right:4px; }
-    .chip { display:inline-block; font-size:30px; padding:2px 8px; border-radius:999px; border:1px solid #1f2937; background:#0b1325; color:#e5e7eb; }
+    .chips-title { color:#9ca3af; font-size:20px; margin-right:4px; }
+    .chip { display:inline-block; font-size:20px; padding:2px 8px; border-radius:999px; border:1px solid #1f2937; background:#0b1325; color:#e5e7eb; }
 
     .footer { color:#9ca3af; font-size:12px; padding:6px 18px 14px; text-align:center; }
 
@@ -512,8 +483,8 @@ INDEX_HTML = r"""
     .puzzle-card { background:var(--card); border:1px solid #1f2937; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,.25); }
     .puzzle-head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid #1f2937; }
     .puzzle-title { font-size:14px; color:#93c5fd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:75%; }
-    .puzzle-grid { display:grid; gap:0px; padding:0px; background:#0b1220; border-radius: 14px; overflow: hidden; }
-    .tile { position:relative; border-radius:0px; overflow:hidden; border:0px; background:#0a0f1b; }
+    .puzzle-grid { display:grid; gap:4px; padding:10px; background:#0b1220; }
+    .tile { position:relative; border-radius:10px; overflow:hidden; border:1px solid #111827; background:#0a0f1b; }
     .tile img { width:100%; height:auto; object-fit:cover; display:block; cursor:pointer; }
     .tile-badge {
     position:absolute; left:8px; top:8px;
@@ -542,7 +513,6 @@ INDEX_HTML = r"""
     .tile-media { 
     position:relative; 
     }
-    .tile-meta { display:none; }
 
     .tile-meta{
     padding: 8px 10px 10px;
@@ -551,20 +521,8 @@ INDEX_HTML = r"""
     }
     .tile-media { aspect-ratio: 16 / 9; }
     .tile-media img { width:100%; height:100%; object-fit:cover; }
-    /* --- depth+ann overlay --- */
-
-    /* --- depth+ann overlay --- */
-    .tile-overlay { position:relative; aspect-ratio: 16 / 9; }
-    .tile-overlay img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
-
-    /* layering */
-    .depth-img { z-index: 1; opacity: 0.95; }
-    .ann-img   { z-index: 2; opacity: 1.0; mix-blend-mode: normal; }
-    .tile-badge{ z-index: 3; }
-
-    /* only when depth exists */
-    .tile-overlay.has-depth .ann-img { opacity: 0.6; }
-        
+  
+  
   </style>
 </head>
 <body>
@@ -629,32 +587,19 @@ INDEX_HTML = r"""
         const firstTile = (g.tiles || [])[0] || {};
         const desc = cleanText(firstTile.text || '');
 
-        const seen = new Set();
-        const allTerms = [];
-        (g.tiles || []).forEach(t => {
-        (t.vlm_terms || []).forEach(x => {
-            const s = String(x || '').trim();
-            if(!s) return;
-            if(seen.has(s)) return;
-            seen.add(s);
-            allTerms.push(s);
-        });
-        });
-
         const tilesHtml = (g.tiles || []).map(t => `
         <div class="tile">
-            <div class="tile-media tile-overlay ${t.depth ? 'has-depth' : ''}">
+            <div class="tile-media">
             <span class="tile-badge">[${t.r},${t.c}]</span>
-
-            ${t.depth ? '<img class="depth-img" src="' + t.depth + '" alt="depth" />' : ''}
-
-            <img class="ann-img" src="${t.image}" alt="[${t.r},${t.c}]"
+            <img src="${t.image}" alt="[${t.r},${t.c}]"
                 onclick="openModal(${encodeURIComponent(JSON.stringify(JSON.stringify(t)))})" />
+            </div>
+
+            <div class="tile-meta">
+            ${chipRow('VLM', t.vlm_terms || [])}
             </div>
         </div>
         `).join('');
-
-        const groupVlmRow = chipRow('VLM', allTerms);
 
         return `
         <div class="puzzle-card">
@@ -667,8 +612,7 @@ INDEX_HTML = r"""
             ${tilesHtml || '<div style="padding:10px;color:#9ca3af">No tiles</div>'}
             </div>
 
-            ${groupVlmRow ? `<div style="padding:10px 14px;">${groupVlmRow}</div>` : ''}
-
+            ${desc ? `<div class="tile-desc">${desc}</div>` : ''}
         </div>
         `;
     }).join('');
