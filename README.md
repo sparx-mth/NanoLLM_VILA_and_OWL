@@ -135,7 +135,7 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
-python3 capture_on_enter.py --rows 2 --cols 2 --overlap 0.3
+python3 capture_on_enter.py --rows 1 --cols 1 --overlap 0.0
 ```
 
 
