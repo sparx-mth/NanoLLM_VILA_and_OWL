@@ -758,9 +758,10 @@ def process_folder(
                                 json.dumps(body),
                                 "application/json",
                             ),
+                            "image_dir": (None, str(dest_jpg_path.parent)),
                         }
                     
-                        r_depth = requests.post(depth_endpoint, files=files, timeout=30)
+                        r_depth = requests.post(depth_endpoint, files=files ,timeout=30)
                         
                         if r_depth.status_code == 200:
                             new_js["DEPTH_ANYTHING"] = r_depth.json()
