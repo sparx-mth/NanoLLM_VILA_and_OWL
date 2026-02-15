@@ -7,6 +7,12 @@ app = Flask(__name__)
 OUT_DIR = "./ingest_out"
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# ── MODE SELECTION ──────────────────────────────────────────────
+# True  = keep all images, build accumulated map (original behavior)
+# False = clear old files on each new image, build from latest only
+ACCUMULATE_MODE = False
+# ────────────────────────────────────────────────────────────────
+
 @app.route("/ingest", methods=["POST"])
 def ingest():
     try:
@@ -36,7 +42,16 @@ def ingest():
         # jpg_path = os.path.join(OUT_DIR, jpg_name)
         # file.save(jpg_path)
 
-        # 4) Save meta JSON (pretty)
+        # 4) In single-image mode, clear old files before saving new one
+        if not ACCUMULATE_MODE:
+            for old_file in os.listdir(OUT_DIR):
+                old_path = os.path.join(OUT_DIR, old_file)
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
+
+        # 5) Save meta JSON (pretty)
         json_name = secure_filename(f"{stem}_dets.json")
         json_path = os.path.join(OUT_DIR, json_name)
         with open(json_path, "w") as f:
@@ -51,4 +66,6 @@ def ingest():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
+    mode_str = "ACCUMULATE (keep all)" if ACCUMULATE_MODE else "SINGLE-IMAGE (clear on new)"
+    print(f"Receiver OWL | Mode: {mode_str}")
     app.run(host="0.0.0.0", port=9090, debug=False)
