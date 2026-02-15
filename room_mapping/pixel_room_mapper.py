@@ -73,18 +73,19 @@ class DynamicTileManager:
         return self.tile_registry[key]
 
     def get_overlap_tile_type(self, existing_id: int, new_class: str) -> int:
-        existing_name = self.id_to_name.get(existing_id, "unknown")
         new_name = new_class.lower().strip()
         if existing_id in (0, 1, 2, 3):
             return self.get_tile_type(new_class)
-        if existing_name == new_name or " and " in existing_name:
+        existing_name = self.id_to_name.get(existing_id, "unknown")
+        existing_parts = set(existing_name.split(" and "))
+        if new_name in existing_parts:
             return existing_id
-        names = sorted([existing_name, new_name])
-        new_id = self.get_tile_type(f"{names[0]} and {names[1]}")
+        all_parts = sorted(existing_parts | {new_name})
+        combo_name = " and ".join(all_parts)
+        new_id = self.get_tile_type(combo_name)
         if new_id not in self.overlap_parents:
-            self.overlap_parents[new_id] = (
-                self.tile_registry.get(names[0], existing_id),
-                self.tile_registry.get(names[1], 0))
+            self.overlap_parents[new_id] = tuple(
+                self.tile_registry.get(p, 0) for p in all_parts)
         return new_id
 
     def get_all_tiles(self) -> Dict:
@@ -359,7 +360,7 @@ class PixelRoomMapper:
     # ── Save ──
 
     def save(self, json_file="data/unified_rooms.json",
-             map_file="data/house_map.txt", image_file="data/house_map.png"):
+             map_file="data/house_map.txt"):
         grid = self.create_grid_map()
         cx, cy = self.camera_to_grid()
         if self.mode == "existing_map":
@@ -380,48 +381,13 @@ class PixelRoomMapper:
             "tile_registry": self.tiles.get_all_tiles(),
             "tile_colors": self.tiles.get_color_registry_hex()}
 
+        os.makedirs(os.path.dirname(json_file) or ".", exist_ok=True)
         with open(json_file, 'w') as f:
             json.dump(output, f, indent=2)
         np.savetxt(map_file, grid, fmt='%d')
-        if image_file:
-            self.save_image(grid, image_file)
         print(f"\nSaved {len(self.all_objects)} objects -> '{self.room_name}'  "
               f"({len(rooms)} rooms, {len(self.tiles.tile_registry)} tile types)")
 
-    def save_image(self, grid, filename="data/house_map.png", cell_px=16, legend=True):
-        """Render grid to PNG with colour legend."""
-        from PIL import Image, ImageDraw, ImageFont
-        h, w = grid.shape
-        used = sorted(set(grid.flat))
-        entry_h = max(cell_px, 18)
-        legend_w = (entry_h + 8 + max((len(self.tiles.id_to_name.get(t, f"id_{t}"))
-                    for t in used), default=6) * 9 + 20) if legend else 0
-
-        img = Image.new("RGB", (w * cell_px + legend_w,
-                         max(h * cell_px, len(used) * entry_h + 20)), (255, 255, 255))
-        draw = ImageDraw.Draw(img)
-
-        for y in range(h):
-            for x in range(w):
-                c = self.tiles.get_color(int(grid[y, x]))
-                x0, y0 = x * cell_px, y * cell_px
-                draw.rectangle([x0, y0, x0 + cell_px - 1, y0 + cell_px - 1], fill=c)
-
-        if legend:
-            try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
-            except Exception: font = ImageFont.load_default()
-            lx, ly = w * cell_px + 10, 10
-            for tid in used:
-                c = self.tiles.get_color(tid)
-                name = self.tiles.id_to_name.get(tid, f"id_{tid}")
-                draw.rectangle([lx, ly, lx + entry_h - 2, ly + entry_h - 2],
-                               fill=c, outline=(0, 0, 0))
-                draw.text((lx + entry_h + 4, ly + 1), name, fill=(0, 0, 0), font=font)
-                ly += entry_h
-
-        os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
-        img.save(filename)
-        print(f"  Image saved: {filename}")
 
 
 # ── File Processing ──────────────────────────────────────────────────
@@ -523,6 +489,38 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
     return len(json_files)
 
 
+def write_empty_room(grid_cells=51, camera_wall="west"):
+    """Write empty room data files (no objects) so renderer/web show a clean slate."""
+    tiles = DynamicTileManager()
+    if isinstance(grid_cells, (list, tuple)):
+        cw, ch = grid_cells
+    else:
+        cw = ch = grid_cells
+
+    grid = np.full((ch, cw), tiles.FREE_SPACE, dtype=np.int8)
+    grid[0, :] = grid[-1, :] = tiles.WALL
+    grid[:, 0] = grid[:, -1] = tiles.WALL
+
+    res = 0.1
+    output = {
+        "house_dimensions_m": {"width": cw * res, "height": ch * res},
+        "grid_resolution": res,
+        "rooms": {"main_room": {
+            "name": "main_room", "objects": [], "doors": [25, 7],
+            "camera_position": [cw // 2, ch // 2],
+            "camera_position_m": [cw * res / 2, ch * res / 2],
+            "room_dimensions_m": [cw * res, ch * res],
+            "bbox": [0, 0, cw, ch]}},
+        "tile_registry": tiles.get_all_tiles(),
+        "tile_colors": tiles.get_color_registry_hex()}
+
+    os.makedirs("data", exist_ok=True)
+    with open("data/unified_rooms.json", 'w') as f:
+        json.dump(output, f, indent=2)
+    np.savetxt("data/house_map.txt", grid, fmt='%d')
+    print(f"[{time.strftime('%H:%M:%S')}] Wrote empty room ({cw}x{ch})")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
@@ -562,7 +560,7 @@ def main():
     print("Monitoring for detection files...  (Ctrl+C to stop)\n")
 
     bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
-    last_count = 0
+    last_count = -1
     try:
         while True:
             files = glob.glob(os.path.join(bbox_dir, "*.json"))
@@ -578,6 +576,7 @@ def main():
                     if n: print(f"Processed {n} files -> unified_rooms.json + house_map.txt")
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
+                    write_empty_room(grid_cells=grid_cells, camera_wall=camera_wall)
                 last_count = len(files)
             time.sleep(2)
     except KeyboardInterrupt:

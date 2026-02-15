@@ -48,10 +48,21 @@ def main():
                     pass
 
             # Also clean output files
-            for f in ["unified_rooms.json", "house_map.txt", "current_mission.txt", "agent_commands.txt"]:
+            for f in ["current_mission.txt", "agent_commands.txt",
+                       "task_request.json", "mission_response.txt"]:
                 if os.path.exists(f):
                     os.remove(f)
                     print(f"  Removed: {f}")
+
+            # Clean data folder
+            data_dir = "data"
+            if os.path.exists(data_dir):
+                for f in glob.glob(os.path.join(data_dir, "*")):
+                    try:
+                        os.remove(f)
+                        print(f"  Removed: {f}")
+                    except:
+                        pass
 
             print("Directory cleaned!\n")
         else:
@@ -70,43 +81,18 @@ def main():
         )
         processes.append(("Receiver OWL", receiver))
 
-        # Wait for first JSON files to appear
-        print("\nWaiting for first detection files...")
+        # Check for existing detection files (non-blocking)
         bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
+        if os.path.exists(bbox_dir):
+            json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
+            if json_files:
+                print(f"\nFound {len(json_files)} existing JSON files!")
+            else:
+                print("\nNo JSON files yet - components will process them as they arrive.")
+        else:
+            print(f"\nDirectory {bbox_dir} not found yet - will be created by receiver.")
 
-        wait_count = 0
-        while True:
-            if os.path.exists(bbox_dir):
-                # Look for ALL .json files
-                json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
-                if json_files:
-                    print(f"\n✓ Found {len(json_files)} JSON files!")
-                    print("Starting remaining components...")
-                    break
-
-            print(".", end="", flush=True)
-            time.sleep(1)
-            wait_count += 1
-            if wait_count % 60 == 0:
-                print("\n", end="", flush=True)
-
-            # Add timeout check
-            if wait_count > 600:  # 600 seconds timeout
-                print("\n No JSON files found after 30 seconds.")
-                response = input("Continue anyway? (y/n): ").strip().lower()
-                if response == 'y':
-                    print("Continuing with setup...")
-                    break
-                else:
-                    print("Exiting...")
-                    sys.exit(1)
-
-            # Check if receiver is still running
-            if receiver.poll() is not None:
-                print("\nError: Receiver OWL stopped unexpectedly")
-                sys.exit(1)
-
-        # 2. Now start the rest of the components
+        # 2. Start the rest of the components
         print("\n[2/7] Starting Room Unifier (monitors for new scans)...")
         unifier = subprocess.Popen(
             [sys.executable, "pixel_room_mapper.py"],

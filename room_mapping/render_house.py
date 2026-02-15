@@ -72,50 +72,15 @@ class DynamicHouseRenderer:
         self.last_structure_hash = None
 
     def load_tile_registry(self):
-        """Load dynamic tile types and use fixed colors."""
-        # Define fixed colors for tile IDs (matching DynamicTileManager)
-        fixed_tile_colors = {
-            0: (240, 240, 240),  # free_space - light gray
-            1: (50, 50, 50),  # wall - dark gray
-            2: (0, 255, 0),  # camera - green
-            3: (139, 69, 19),  # door - brown
-            4: (139, 90, 43),  # table - tan
-            5: (165, 42, 42),  # chair - brown-red
-            6: (100, 100, 200),  # table and monitor - blue-gray
-            7: (75, 75, 150),  # tv - dark blue
-            8: (255, 255, 0),  # entry point - yellow
-            9: (128, 0, 128),  # bicycle - purple
-            10: (80, 80, 80),  # black suitcase - dark gray
-            11: (0, 128, 255),  # bottle - light blue
-            12: (255, 128, 0),  # mug - orange
-            13: (100, 100, 200),  # monitor - blue
-            14: (64, 64, 64),  # keyboard - gray
-            15: (150, 50, 150),  # bicycle and chair - purple-red
-            16: (80, 80, 160),  # keyboard and monitor - gray-blue
-            -1: (20, 20, 20),  # unknown - very dark gray
-        }
-
-        if "tile_registry" in self.structure:
-            # Load from JSON
-            registry = self.structure["tile_registry"]
-
-            # Apply colors from fixed scheme
-            for name, tile_id in registry.items():
-                # Use fixed color if available, otherwise use a default
-                if tile_id in fixed_tile_colors:
-                    self.tile_colors[tile_id] = fixed_tile_colors[tile_id]
-                else:
-                    # Fallback for any undefined tile IDs
-                    # Generate a distinguishable color based on the ID
-                    base_color = 100 + (tile_id * 10) % 155
-                    self.tile_colors[tile_id] = (base_color, base_color, base_color)
-
-                self.tile_registry[name] = tile_id
-
-        # Also add the fixed colors that might not be in the registry
-        for tile_id, color in fixed_tile_colors.items():
-            if tile_id not in self.tile_colors:
-                self.tile_colors[tile_id] = color
+        """Load tile types and colors from JSON (single source of truth)."""
+        self.tile_registry = self.structure.get("tile_registry", {})
+        hex_colors = self.structure.get("tile_colors", {})
+        for name, hex_c in hex_colors.items():
+            tid = self.tile_registry.get(name)
+            if tid is not None:
+                h = hex_c.lstrip('#')
+                self.tile_colors[tid] = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        self.tile_colors.setdefault(-1, (20, 20, 20))
 
     def save_map_image(self, filename="data/current_map.png"):
         """Save current pygame screen to file for web display"""
