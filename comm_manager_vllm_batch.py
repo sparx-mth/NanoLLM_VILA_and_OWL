@@ -5,7 +5,7 @@
 comm_manager.py
 
 Flow:
-  1) Receive caption from VILA via POST /from_vila  (Content-Type: text/plain)
+  1) Receive caption from VLM
   2) Forward caption to Jetson2 /prompts -> expect {"prompts":[...]}
   3) Only after prompts are received, find the latest captured image under --captures-root
   4) POST to NanoOWL /infer with multipart form:
@@ -28,9 +28,7 @@ python3 comm_manager.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint h
 
 """
 import datetime
-import queue
 import signal
-import sys
 import threading
 import numpy as np
 
@@ -42,8 +40,6 @@ from pathlib import Path
 import os
 import json
 import time
-import glob
-import shutil 
 import argparse
 from collections import deque
 import hashlib
@@ -52,7 +48,6 @@ import urllib.request, urllib.error  # for Jetson2 JSON POST
 import requests                      # for NanoOWL multipart
 import cv2                           # for drawing boxes
 import base64
-import mimetypes
 
 from utils_pipeline import log, load_json, already_captioned, extract_prompt_response, remap_path, \
     parse_caption_from_response, VlmResult
@@ -93,6 +88,9 @@ VLLM_TIMEOUT = 20.0
 VLLM_MAX_TOKENS = 512
 VLLM_TEMPERATURE = 0.1
 
+TILES_ROOT_DEFAULT = "/home/user/jetson-containers/data/tiles"
+OUT_ROOT_DEFAULT   = "/home/user/jetson-containers/data/R2"
+TILES_ANN_SUBDIR   = "____ANN"
 
 
 
@@ -125,6 +123,7 @@ _DROP_WORDS = {
     "small","big","large","tiny",
     "partially","visible","likely"
 }
+
 
 def caption_to_owl_prompts(caption: str) -> list[str]:
     """
@@ -204,408 +203,33 @@ def _to_image_url(image_ref: str) -> str:
     
     return f"data:image/jpeg;base64,{b64}"
 
-def _is_in_ann_folder(fp: str) -> bool:
-    p = Path(fp)
-    return any(str(part).lower().endswith("_ann") for part in p.parents)
-
-def _find_latest_image_and_json(root_dir: str):
-    if not root_dir or not os.path.isdir(root_dir):
-        print("Failed #1")
-        return None, None
-
-    root_path = Path(root_dir)
-    assert root_path.exists(), f"{root_dir} does not exist"
-    latest_folder_path = root_path / "latest"
-    if not latest_folder_path.exists():
-        return None, None
-    assert latest_folder_path.is_dir(), f"{latest_folder_path} is not a dir"
-    latest_folder = str(latest_folder_path)
-
-    latest_img = None
-    latest_mtime = -1.0
-    print(f"latest folder: {latest_folder}")
-
-    for fp in latest_folder_path.iterdir():
-        if not fp.is_file() or fp.suffix not in [".jpg", ".jpeg", ".png"]:
-            continue
-        print(f"Processing {fp}")
-
-        try:
-            ctime = os.path.getctime(fp)
-            if ctime > latest_mtime:
-                latest_mtime = ctime
-                latest_img = fp
-        except Exception as exp:
-            print(f"Failed #3 {exp}")
-            pass
-    if not latest_img:
-        return None, None
-
-    latest_img = str(latest_img)
-    print(f"latest image: {latest_img}")
-
-    base, _ = os.path.splitext(latest_img)
-    sidecar_json = base + ".json"
-    return latest_img, sidecar_json
-
-
-def _update_sidecar_json(json_path: str, updater: dict):
-    """
-    Robustly updates the JSON by merging new data with existing content on disk.
-    """
-    for attempt in range(5):  # Retry up to 5 times if file is busy
-        try:
-            obj = {}
-            if os.path.isfile(json_path):
-                with open(json_path, "r", encoding="utf-8") as f:
-                    obj = json.load(f)
-
-            # Deep merge the new data (OWL or VLM results)
-            for k, v in updater.items():
-                if isinstance(v, dict) and k in obj and isinstance(obj[k], dict):
-                    obj[k].update(v)
-                else:
-                    obj[k] = v
-
-            # Write to a unique temp file first to prevent corruption
-            tmp = f"{json_path}.{os.getpid()}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(obj, f, ensure_ascii=False, indent=2)
-
-            os.replace(tmp, json_path)
-            return True
-        except (IOError, json.JSONDecodeError) as e:
-            time.sleep(0.1)  # Wait for other process to release file
-    return False
-
-
 
 def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
                             annotate: int, timeout: float):
-    """
-    Send multipart/form-data to NanoOWL:
-      files: image=@<path>
-      data:  prompts='["a","b"]', annotate='0'/'1'
-    Returns (status_code, response_json_or_text)
-    """
     if not endpoint:
-        return -1, "nanoowl endpoint not configured"
+        return -1, "nanoowl endpoint not configured", 0.0
     if not (image_path and os.path.isfile(image_path)):
-        return -1, f"image not found: {image_path}"
+        return -1, f"image not found: {image_path}", 0.0
+
     t0 = time.perf_counter()
-    f = open(image_path, "rb")  
-    files = {"image": (os.path.basename(image_path), open(image_path, "rb"), "application/octet-stream")}
     data = {"prompts": json.dumps(prompts or []), "annotate": str(int(annotate))}
+
     try:
-        r = requests.post(endpoint, files=files, data=data, timeout=timeout)
+        with open(image_path, "rb") as f:
+            files = {"image": (os.path.basename(image_path), f, "application/octet-stream")}
+            r = requests.post(endpoint, files=files, data=data, timeout=timeout)
+
         dt = time.perf_counter() - t0
         try:
             body = r.json()
         except Exception:
             body = r.text
         return r.status_code, body, dt
+
     except Exception as e:
         dt = time.perf_counter() - t0
         return -1, str(e), dt
-    finally:
-        try:
-            f.close()
-        except Exception:
-            pass
 
-
-def _ann_outpath_for_image(image_path: str) -> str:
-    """
-    Return output path for annotated image inside a *run-level* folder named <run_dir>_ann.
-    Example:
-      image_path = /.../captures/2025_10_19___15_53_28/x-010y017z055yaw0000000___2025_10_19___15_54_07.jpg
-      => /.../captures/2025_10_19___15_53_28_ann/x-010y017z055yaw0000000___2025_10_19___15_54_07_ann.jpg
-    """
-    base_dir = os.path.dirname(image_path)                     # e.g. .../captures/2025_10_19___15_53_28
-    parent_dir = os.path.dirname(base_dir)                     # e.g. .../captures
-
-    run_name_path = Path(base_dir)# e.g. 2025_10_19___15_53_28
-    assert run_name_path.is_symlink(), f"Expected symlink {run_name_path} to point to a run folder"
-    run_name = str(run_name_path.resolve().name)
-    ann_dir = os.path.join(parent_dir, f"{run_name}_ann")      # e.g. .../captures/2025_10_19___15_53_28_ann
-    os.makedirs(ann_dir, exist_ok=True)
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    base_name = re.sub(r"_ann$", "", base_name, flags=re.IGNORECASE)
-    out_name = f"{base_name}_ann.jpg"
-
-    return os.path.join(ann_dir, out_name)
-
-
-
-import re
-from pathlib import Path
-
-_TILE_RE = re.compile(r"^(.*)_tile_(\d+)_(\d+)$", re.IGNORECASE)
-
-def _parse_group_and_rc(stem: str):
-    m = _TILE_RE.match(stem)
-    if not m:
-        return None, None, None
-    return m.group(1), int(m.group(2)), int(m.group(3))
-
-def _bbox_shift_xyxy(b, dx, dy):
-    x1, y1, x2, y2 = b
-    return [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
-
-def _iou_xyxy(a, b):
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    area_a = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
-    area_b = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
-    denom = area_a + area_b - inter
-    return inter / denom if denom > 0 else 0.0
-
-def _dedupe_by_iou(dets, iou_thr=0.6):
-    # keep highest score first
-    dets = sorted(dets, key=lambda d: float(d.get("score") or 0.0), reverse=True)
-    kept = []
-    for d in dets:
-        lbl = d.get("label") or "object"
-        bb = d.get("bbox")
-        if not bb:
-            continue
-        is_dup = False
-        for k in kept:
-            if (k.get("label") or "object") != lbl:
-                continue
-            if _iou_xyxy(bb, k["bbox"]) >= iou_thr:
-                is_dup = True
-                break
-        if not is_dup:
-            kept.append(d)
-    return kept
-
-def merge_tiles_and_send(
-    new_folder_path: str,
-    overlap: float,
-    depth_endpoint: str,
-    forward_json_url: str,
-    forward_timeout: float,
-    forward_retries: int,
-    depth_timeout: float = 30.0,
-    iou_thr: float = 0.6,
-):
-    """
-    Builds per-group mosaic + merged global detections, then:
-      - POST to Depth: image=mosaic, detections=merged_detections
-      - POST merged JSON (including Depth response) to forward_json_url
-
-    Requires existing helpers in your file:
-      - _load_json(path)
-      - _extract_detections(nanoowl_result)
-      - _scale_if_normalized(bbox, W, H)
-      - _post_full_json(url, obj, timeout, retries, headers=None)
-    """
-    new_folder_path = Path(new_folder_path)
-    if not new_folder_path.exists():
-        print("[merge] folder not found:", new_folder_path)
-        return []
-
-    # --- collect tiles ---
-    tiles = []
-    for jpg_path in new_folder_path.glob("*.jpg"):
-        if jpg_path.name.lower().endswith("_ann.jpg"):
-            continue
-        gid, r, c = _parse_group_and_rc(jpg_path.stem)
-        if gid is None:
-            continue
-
-        json_path = jpg_path.with_suffix(".json")
-        meta = _load_json(str(json_path)) or {}
-        nano = meta.get("nanoowl") or {}
-        dets = _extract_detections(nano.get("result"))
-
-        img = cv2.imread(str(jpg_path), cv2.IMREAD_COLOR)
-        if img is None:
-            continue
-        H, W = img.shape[:2]
-
-        tiles.append({
-            "gid": gid,
-            "r": r,
-            "c": c,
-            "jpg": jpg_path,
-            "json": json_path,
-            "img": img,     # keep in memory for stitching
-            "W": W,
-            "H": H,
-            "dets": dets,
-        })
-
-    if not tiles:
-        print("[merge] no tiles found in", new_folder_path)
-        return []
-
-    # --- group by gid ---
-    by_gid = {}
-    for t in tiles:
-        by_gid.setdefault(t["gid"], []).append(t)
-
-    outputs = []
-
-    for gid, gtiles in by_gid.items():
-        gtiles.sort(key=lambda x: (x["r"], x["c"]))
-
-        max_r = max(t["r"] for t in gtiles)
-        max_c = max(t["c"] for t in gtiles)
-
-        tileW = gtiles[0]["W"]
-        tileH = gtiles[0]["H"]
-
-        strideX = int(round(tileW * (1.0 - float(overlap))))
-        strideY = int(round(tileH * (1.0 - float(overlap))))
-
-        mosaicW = tileW + max_c * strideX
-        mosaicH = tileH + max_r * strideY
-
-        # --- stitch mosaic ---
-        mosaic = np.zeros((mosaicH, mosaicW, 3), dtype=np.uint8)
-
-        for t in gtiles:
-            x0 = t["c"] * strideX
-            y0 = t["r"] * strideY
-            h, w = t["H"], t["W"]
-            # paste (simple overwrite; good enough for now)
-            mosaic[y0:y0+h, x0:x0+w] = t["img"]
-
-        mosaic_name = f"{gid}__MOSAIC.jpg"
-        mosaic_path = new_folder_path / mosaic_name
-        cv2.imwrite(str(mosaic_path), mosaic, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-
-        # 2) build global detections
-        global_dets = []
-        for t in tiles:
-            global_dets.extend(shifted_tile_dets)
-
-        # dedupe (NMS/IoU)
-        global_dets = dedupe_by_iou(global_dets, iou_thr=iou_thr)
-
-        # -------------------------------------------------------
-        # (NEW) draw global detections on mosaic -> MOSAIC_ann.jpg
-        # -------------------------------------------------------
-        mosaic_ann_path = new_folder_path / f"{gid}__MOSAIC_ann.jpg"
-        annotate_mosaic_from_global_dets(
-            mosaic_path=str(mosaic_path),      
-            out_path=str(mosaic_ann_path),    
-            dets=global_dets,                 
-            thickness=7,
-            font_scale=1.3,
-            show_score=True,
-        )
-
-        # --- shift detections to global coords ---
-        all_global = []
-        for t in gtiles:
-            dx = t["c"] * strideX
-            dy = t["r"] * strideY
-            for d in t["dets"]:
-                bb = d.get("bbox")
-                if not bb or len(bb) != 4:
-                    continue
-
-                # normalize -> pixels in tile space if needed
-                sx1, sy1, sx2, sy2 = _scale_if_normalized(bb, t["W"], t["H"])
-                gb = _bbox_shift_xyxy([float(sx1), float(sy1), float(sx2), float(sy2)], dx, dy)
-
-                all_global.append({
-                    "label": d.get("label") or "object",
-                    "score": d.get("score"),
-                    "bbox": gb,
-                    "src": {"tile_r": t["r"], "tile_c": t["c"], "tile": t["jpg"].name},
-                })
-
-        merged = _dedupe_by_iou(all_global, iou_thr=iou_thr)
-
-
-        # build detections payload for depth (compatible-style)
-        depth_dets = {
-            "detections": [
-                {"label": d["label"], "score": d.get("score"), "bbox": d["bbox"]}
-                for d in merged
-            ]
-        }
-
-        merged_json = {
-            "group_id": gid,
-            "rows": max_r + 1,
-            "cols": max_c + 1,
-            "overlap": float(overlap),
-            "tile_size": {"w": tileW, "h": tileH},
-            "mosaic_image": mosaic_name,
-            "global_detections": merged,
-        }
-
-        # --- call depth on mosaic ---
-        if depth_endpoint:
-            try:
-                with open(str(mosaic_path), "rb") as f_img:
-                    files = {
-                        "image": (mosaic_name, f_img, "image/jpeg"),
-                        "detections": ("detections.json", json.dumps(depth_dets), "application/json"),
-                        "image_dir": (None, str(new_folder_path)),
-                    }
-                    r_depth = requests.post(depth_endpoint, files=files, timeout=depth_timeout)
-                    if r_depth.status_code == 200:
-                        merged_json["DEPTH_ANYTHING"] = r_depth.json()
-                        print(f"[merge][depth] ok gid={gid}")
-                    else:
-                        merged_json["DEPTH_ANYTHING_error"] = {
-                            "status": r_depth.status_code,
-                            "text": r_depth.text[:500],
-                        }
-                        print(f"[merge][depth] failed gid={gid} status={r_depth.status_code}")
-            except Exception as e:
-                merged_json["DEPTH_ANYTHING_error"] = {"exception": str(e)}
-                print(f"[merge][depth] exception gid={gid}: {e}")
-
-        # --- write merged json to disk ---
-        merged_path = new_folder_path / f"{gid}__MERGED.json"
-        with open(merged_path, "w", encoding="utf-8") as f:
-            json.dump(merged_json, f, ensure_ascii=False, indent=2)
-
-        # --- forward merged json to Jetson3 ingest ---
-        if forward_json_url:
-            try:
-                sidecar_basename = merged_path.name
-                headers = {"X-Sidecar-Basename": sidecar_basename}
-                s, b = _post_full_json(
-                    forward_json_url,
-                    merged_json,
-                    timeout=forward_timeout,
-                    retries=forward_retries,
-                    headers=headers
-                )
-                print(f"[merge][forward] gid={gid} status={s}")
-                merged_json["_forward_status"] = s
-                merged_json["_forward_body"] = b if isinstance(b, (dict, list)) else str(b)[:500]
-                # update merged file with forward result
-                with open(merged_path, "w", encoding="utf-8") as f:
-                    json.dump(merged_json, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                print(f"[merge][forward] exception gid={gid}: {e}")
-
-        outputs.append({"gid": gid, "mosaic": str(mosaic_path), "merged_json": str(merged_path)})
-
-    return outputs
-
-
-
-
-# -------------------- Annotation utilities (OpenCV) --------------------
 
 def annotate_mosaic_from_global_dets(
     mosaic_path: str,
@@ -666,6 +290,316 @@ def annotate_mosaic_from_global_dets(
         return True
     print(f"[mosaic_ann][error] failed to write {out_path}")
     return False
+
+
+_TILE_RE = re.compile(r"^(.*)_tile_(\d+)_(\d+)$", re.IGNORECASE)
+
+def _parse_group_and_rc(stem: str):
+    m = _TILE_RE.match(stem)
+    if not m:
+        return None, None, None
+    return m.group(1), int(m.group(2)), int(m.group(3))
+
+def _bbox_shift_xyxy(b, dx, dy):
+    x1, y1, x2, y2 = b
+    return [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+
+def _iou_xyxy(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
+    area_b = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
+    denom = area_a + area_b - inter
+    return inter / denom if denom > 0 else 0.0
+
+def _dedupe_by_iou(dets, iou_thr=0.6):
+    # keep highest score first
+    dets = sorted(dets, key=lambda d: float(d.get("score") or 0.0), reverse=True)
+    kept = []
+    for d in dets:
+        lbl = d.get("label") or "object"
+        bb = d.get("bbox")
+        if not bb:
+            continue
+        is_dup = False
+        for k in kept:
+            if (k.get("label") or "object") != lbl:
+                continue
+            if _iou_xyxy(bb, k["bbox"]) >= iou_thr:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(d)
+    return kept
+
+
+def merge_tiles_and_send(
+    tiles_folder_path: str,
+    out_folder_path: str,
+    out_ann_folder_path: str,
+    overlap: float,
+    depth_endpoint: str,
+    forward_json_url: str,
+    forward_timeout: float,
+    forward_retries: int,
+    depth_timeout: float = 30.0,
+    iou_thr: float = 0.6,
+):
+    tiles_folder_path = Path(tiles_folder_path)
+    out_folder_path   = Path(out_folder_path)
+    ann_dir   = Path(out_ann_folder_path)
+
+
+    if not tiles_folder_path.exists():
+        print("[merge] tiles folder not found:", tiles_folder_path)
+        return []
+
+    out_folder_path.mkdir(parents=True, exist_ok=True)
+    ann_dir.mkdir(parents=True, exist_ok=True)
+
+
+    # --- collect tiles from tiles_folder_path ---
+    tiles = []
+    for jpg_path in tiles_folder_path.glob("*.jpg"):
+        if jpg_path.name.lower().endswith("_ann.jpg"):
+            continue
+        gid, r, c = _parse_group_and_rc(jpg_path.stem)
+        if gid is None:
+            continue
+
+        json_path = jpg_path.with_suffix(".json")
+        meta = _load_json(str(json_path)) or {}
+        nano = meta.get("nanoowl") or {}
+        dets = _extract_detections(nano.get("result"))
+
+        img = cv2.imread(str(jpg_path), cv2.IMREAD_COLOR)
+        if img is None:
+            continue
+        H, W = img.shape[:2]
+
+        tiles.append({
+            "gid": gid,
+            "r": r,
+            "c": c,
+            "jpg": jpg_path,
+            "json": json_path,
+            "img": img,
+            "W": W,
+            "H": H,
+            "dets": dets,
+        })
+
+    if not tiles:
+        print("[merge] no tiles found in", tiles_folder_path)
+        return []
+
+    # --- group by gid ---
+    by_gid = {}
+    for t in tiles:
+        by_gid.setdefault(t["gid"], []).append(t)
+
+    outputs = []
+
+    for gid, gtiles in by_gid.items():
+        gtiles.sort(key=lambda x: (x["r"], x["c"]))
+
+        max_r = max(t["r"] for t in gtiles)
+        max_c = max(t["c"] for t in gtiles)
+
+        tileW = gtiles[0]["W"]
+        tileH = gtiles[0]["H"]
+
+        strideX = int(round(tileW * (1.0 - float(overlap))))
+        strideY = int(round(tileH * (1.0 - float(overlap))))
+
+        mosaicW = tileW + max_c * strideX
+        mosaicH = tileH + max_r * strideY
+
+        # --- stitch mosaic ---
+        mosaic = np.zeros((mosaicH, mosaicW, 3), dtype=np.uint8)
+        for t in gtiles:
+            x0 = t["c"] * strideX
+            y0 = t["r"] * strideY
+            h, w = t["H"], t["W"]
+            mosaic[y0:y0+h, x0:x0+w] = t["img"]
+
+        # ✅ FINAL output names (display-friendly)
+        final_img_name = f"{gid}.jpg"
+        final_json_name = f"{gid}.json"
+        mosaic_path = out_folder_path / final_img_name
+        cv2.imwrite(str(mosaic_path), mosaic, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+
+        # --- shift detections to global coords ---
+        all_global = []
+        for t in gtiles:
+            dx = t["c"] * strideX
+            dy = t["r"] * strideY
+            for d in t["dets"]:
+                bb = d.get("bbox")
+                if not bb or len(bb) != 4:
+                    continue
+
+                sx1, sy1, sx2, sy2 = _scale_if_normalized(bb, t["W"], t["H"])
+                gb = _bbox_shift_xyxy([float(sx1), float(sy1), float(sx2), float(sy2)], dx, dy)
+
+                all_global.append({
+                    "label": d.get("label") or "object",
+                    "score": d.get("score"),
+                    "bbox": gb,
+                    "src": {"tile_r": t["r"], "tile_c": t["c"], "tile": t["jpg"].name},
+                })
+
+        merged = _dedupe_by_iou(all_global, iou_thr=iou_thr)
+
+        # --- FINAL ann (written to out_folder_path) ---
+        mosaic_ann_path = ann_dir / f"{gid}_ann.jpg"
+        annotate_mosaic_from_global_dets(
+            mosaic_path=str(mosaic_path),
+            out_path=str(mosaic_ann_path),
+            dets=merged,
+            thickness=7,
+            font_scale=1.3,
+            show_score=True,
+        )
+
+        depth_dets = {
+            "detections": [
+                {"label": d["label"], "score": d.get("score"), "bbox": d["bbox"]}
+                for d in merged
+            ]
+        }
+
+
+        # write merged JSON with prompts + detections + metadata
+        now = time.time()
+        iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+
+        mosaic_prompts = []
+        seen = set()
+        for d in (merged or []):
+            lbl = str(d.get("label") or "").strip()
+            if not lbl:
+                continue
+            if lbl not in seen:
+                seen.add(lbl)
+                mosaic_prompts.append(lbl)
+
+        merged_json = {
+            "pose": {},
+            "image": final_img_name,
+            "entries": [
+                {
+                    "timestamp": int(now),
+                    "prompt": "Describe the objects in the image",
+                    "response": "\n".join([f"- {p}" for p in mosaic_prompts]),
+                }
+            ],
+            "nanoowl": {
+                "ts": now,
+                "iso_time": iso,
+                "endpoint": "MERGED_FROM_TILES",
+                "status": 200,
+                "prompts": mosaic_prompts,
+                "annotate": 0,
+                "result": {
+                    "detections": [
+                        {
+                            "bbox": [
+                                int(round(d["bbox"][0])),
+                                int(round(d["bbox"][1])),
+                                int(round(d["bbox"][2])),
+                                int(round(d["bbox"][3])),
+                            ],
+                            "label": d.get("label") or "object",
+                            "score": (float(d["score"]) if d.get("score") is not None else None),
+                        }
+                        for d in (merged or [])
+                        if isinstance(d.get("bbox"), (list, tuple)) and len(d["bbox"]) == 4
+                    ]
+                }
+            },
+
+            "mosaic": {
+                "group_id": gid,
+                "rows": max_r + 1,
+                "cols": max_c + 1,
+                "overlap": float(overlap),
+                "tile_size": {"w": tileW, "h": tileH},
+            }
+        }
+
+
+        # --- call depth on FINAL mosaic ---
+        if depth_endpoint:
+            try:
+                with open(str(mosaic_path), "rb") as f_img:
+                    files = {
+                        "image": (final_img_name, f_img, "image/jpeg"),
+                        "detections": ("detections.json", json.dumps(depth_dets), "application/json"),
+                        "image_dir": (None, str(out_folder_path)),
+                    }
+                    r_depth = requests.post(depth_endpoint, files=files, timeout=depth_timeout)
+                    if r_depth.status_code == 200:
+                        merged_json["DEPTH_ANYTHING"] = r_depth.json()
+                        print(f"[merge][depth] ok gid={gid}")
+                    else:
+                        merged_json["DEPTH_ANYTHING_error"] = {
+                            "status": r_depth.status_code,
+                            "text": r_depth.text[:500],
+                        }
+                        print(f"[merge][depth] failed gid={gid} status={r_depth.status_code}")
+            except Exception as e:
+                merged_json["DEPTH_ANYTHING_error"] = {"exception": str(e)}
+                print(f"[merge][depth] exception gid={gid}: {e}")
+
+        # --- write FINAL merged json ---
+        merged_path = out_folder_path / final_json_name
+        with open(merged_path, "w", encoding="utf-8") as f:
+            json.dump(merged_json, f, ensure_ascii=False, indent=2)
+
+        # --- forward merged json ---
+        if forward_json_url:
+            try:
+                headers = {"X-Sidecar-Basename": merged_path.name}
+                s, b = _post_full_json(
+                    forward_json_url,
+                    merged_json,
+                    timeout=forward_timeout,
+                    retries=forward_retries,
+                    headers=headers
+                )
+                print(f"[merge][forward] gid={gid} status={s}")
+                merged_json["_forward_status"] = s
+                merged_json["_forward_body"] = b if isinstance(b, (dict, list)) else str(b)[:500]
+
+                # update FINAL json with forward result
+                with open(merged_path, "w", encoding="utf-8") as f:
+                    json.dump(merged_json, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[merge][forward] exception gid={gid}: {e}")
+
+        outputs.append({
+            "gid": gid,
+            "final_image": str(mosaic_path),
+            "final_json": str(merged_path),
+            "final_ann": str(mosaic_ann_path),
+        })
+
+    return outputs
+
+
+# -------------------- Annotation utilities (OpenCV) --------------------
+
+
 
 
 def _color_for_label(label: str):
@@ -740,35 +674,30 @@ def _draw_label_box(img, x1, y1, text, color):
     cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), color, thickness=-1)
     cv2.putText(img, text, (x1 + 3, y1 - 4), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
-def _annotate_from_json(image_path: str, json_path: str):
+
+def _annotate_tile_to_path(image_path: str, json_path: str, out_path: str) -> bool:
     """
-    Read sidecar JSON (expects json["nanoowl"]["result"]), draw boxes + labels
-    and write <basename>_ann.jpg next to the original image.
+    Like _annotate_from_json, but writes to explicit out_path (no symlink logic).
     """
     if not (image_path and os.path.isfile(image_path)):
-        print(f"[annotate][skip] missing image: {image_path}")
         return False
     if not (json_path and os.path.isfile(json_path)):
-        print(f"[annotate][skip] missing json: {json_path}")
         return False
 
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
-    except Exception as e:
-        print(f"[annotate][warn] failed to read json: {e}")
+    except Exception:
         return False
 
     nano = meta.get("nanoowl") or {}
     result = nano.get("result")
     dets = _extract_detections(result)
     if not dets:
-        print("[annotate] no detections; skipping")
         return False
 
     img = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
-        print("[annotate][warn] failed to read image")
         return False
 
     H, W = img.shape[:2]
@@ -778,6 +707,7 @@ def _annotate_from_json(image_path: str, json_path: str):
         y1 = max(0, min(H - 1, y1)); y2 = max(0, min(H - 1, y2))
         if x2 <= x1 or y2 <= y1:
             continue
+
         label = d["label"]
         score = d["score"]
         text  = f"{label}" + (f" {score:.2f}" if isinstance(score, float) else "")
@@ -785,15 +715,9 @@ def _annotate_from_json(image_path: str, json_path: str):
         cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=7)
         _draw_label_box(img, x1, y1, text, color)
 
-    out_path = _ann_outpath_for_image(image_path)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    return bool(cv2.imwrite(out_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), 92]))
 
-    ok = cv2.imwrite(out_path, img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-    if ok:
-        print(f"[annotate] wrote {out_path}")
-        return True
-
-    print("[annotate][error] failed to write annotated image")
-    return False
 
 
 def _load_json(path: str):
@@ -802,17 +726,6 @@ def _load_json(path: str):
             return json.load(f)
     except Exception:
         return None
-
-def _has_any_bbox(nanoowl_section: dict) -> bool:
-    """
-    Returns True iff the nanoowl result contains at least one detection (bbox).
-    Uses the same normalization as _extract_detections().
-    """
-    if not isinstance(nanoowl_section, dict):
-        return False
-    result = nanoowl_section.get("result")
-    dets = _extract_detections(result)
-    return len(dets) > 0
 
 
 def _post_full_json(url: str, obj: dict, timeout: float, retries: int = 3, headers: dict | None = None):
@@ -838,34 +751,6 @@ def _post_full_json(url: str, obj: dict, timeout: float, retries: int = 3, heade
     return last_status, last_body
 
 
-def _update_sidecar_json_robust(json_path: str, new_data: dict):
-    """
-    Ensures steps 1-4 are merged correctly without deleting existing keys.
-    """
-    for _ in range(5):  # Retry loop to handle file locking
-        try:
-            current_data = {}
-            if os.path.exists(json_path):
-                with open(json_path, 'r') as f:
-                    current_data = json.load(f)
-
-            # Deep merge the new results into the existing JSON
-            # This preserves 'pose', 'entries', and 'vlm' while adding 'nanoowl'
-            for key, value in new_data.items():
-                if isinstance(value, dict) and key in current_data:
-                    current_data[key].update(value)
-                else:
-                    current_data[key] = value
-
-            # Atomic write
-            tmp_path = json_path + ".tmp"
-            with open(tmp_path, 'w') as f:
-                json.dump(current_data, f, indent=2)
-            os.replace(tmp_path, json_path)
-            return current_data  # Return the FULL json for the planner
-        except (json.JSONDecodeError, IOError):
-            time.sleep(0.05)
-    return None
 
 def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, retry_sleep_s: float) -> VlmResult:
     """
@@ -938,7 +823,10 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
 
 def process_folder(
     folder: str,
-    new_folder: str,
+    tiles_folder: str,
+    tiles_ann_folder: str,
+    out_folder: str,
+    out_ann_folder: str, 
     endpoint: str,
     depth_endpoint: str,
     path_src: Optional[str],
@@ -951,8 +839,9 @@ def process_folder(
     args=None
 ) -> Tuple[int, int, int]:
 
-    # --- Start of Original Structure ---
-    # Filter and sort JPG files, excluding already annotated ones
+    # -------------------------
+    # Stage -1: scan source folder
+    # -------------------------
     jpgs = sorted([
         f for f in os.listdir(folder)
         if f.lower().endswith(".jpg") and not f.lower().endswith("_ann.jpg")
@@ -961,56 +850,47 @@ def process_folder(
     if not jpgs:
         log(f"[worker] No JPGs found in: {folder}")
         return (0, 0, 0)
-    
-    print(jpgs)
-    done = skipped = failed = 0
-    new_folder_path = Path(new_folder)
-    new_folder_path.mkdir(parents=True, exist_ok=True)
 
     folder_path = Path(folder)
-    # Minor fix: If the source folder is a symlink, resolve it; otherwise, use as is
     if folder_path.is_symlink():
-        folder = folder_path.resolve()
+        folder = str(folder_path.resolve())
 
-    # Manage the "latest" symlink to point to the current processing directory
-    latest_link = new_folder_path.parent / "latest"
-    try:
-        if os.path.lexists(latest_link):
-            os.remove(latest_link)
-        os.symlink(new_folder_path, latest_link)
-    except Exception as e:
-        print(f"Failed to create symlink {latest_link}: {e}")
+    tiles_folder_path = Path(tiles_folder)
+    tiles_folder_path.mkdir(parents=True, exist_ok=True)
 
+    tiles_ann_folder_path = Path(tiles_ann_folder)
+    tiles_ann_folder_path.mkdir(parents=True, exist_ok=True)
 
+    out_folder_path = Path(out_folder)
+    out_folder_path.mkdir(parents=True, exist_ok=True)
+
+    out_ann_folder_path = Path(out_ann_folder)
+    out_ann_folder_path.mkdir(parents=True, exist_ok=True)
+
+    log(f"[worker] source folder      = {folder}")
+    log(f"[worker] tiles_folder      = {tiles_folder_path}")
+    log(f"[worker] tiles_ann_folder  = {tiles_ann_folder_path}")
+    log(f"[worker] out_folder        = {out_folder_path}")
+    log(f"[worker] out_ann_folder    = {out_ann_folder_path}")
 
     # -------------------------
-    # Stage 0: prepare tasks (copy + init json)
+    # Stage 0: prepare tasks (copy tile + init tile json)
     # -------------------------
-    tasks = []  # each task: dict with paths + flags
+    tasks = []
     for jpg in jpgs:
-        jpg_path = Path(folder) / jpg
-        shutil.copy(jpg_path, Path(new_folder))
-
-        dest_jpg_path = new_folder_path / jpg
+        dest_jpg_path = Path(folder) / jpg        
         base = os.path.splitext(jpg)[0]
-        old_json_path = os.path.join(str(folder), base + ".json")
-        new_json_path = new_folder_path / f"{base}.json"
+        tile_json_path = Path(folder) / f"{base}.json"
 
-        js = load_json(old_json_path)
+        js0 = load_json(str(tile_json_path)) or {}
+        js = {
+            "pose": js0.get("pose", {}) if isinstance(js0.get("pose", {}), dict) else {},
+            "image": js0.get("image", dest_jpg_path.name),
+            "entries": js0.get("entries", []) if isinstance(js0.get("entries", []), list) else [],
+        }
 
-        # build initial json
-        new_js = {}
-        pose = js.get("pose") if js else None
-        new_js.setdefault("pose", pose)
-        new_js.setdefault("image", os.path.basename(str(dest_jpg_path)))
-        new_js.setdefault("entries", [])
-
-        with open(new_json_path, "w") as f:
-            json.dump(new_js, f, indent=2)
-
-        # decide if we need VLM
         need_vlm = True
-        if (not force) and js and already_captioned(js):
+        if (not force) and already_captioned(js):
             need_vlm = False
 
         img_for_vlm = remap_path(str(dest_jpg_path), path_src, path_dst)
@@ -1019,16 +899,15 @@ def process_folder(
             "jpg": jpg,
             "base": base,
             "dest_jpg_path": dest_jpg_path,
-            "new_json_path": new_json_path,
-            "new_js": new_js,          # keep dict in memory, we will update it
+            "tile_json_path": tile_json_path,
+            "new_js": js,              
             "need_vlm": need_vlm,
             "img_for_vlm": img_for_vlm,
         })
-
     # -------------------------
     # Stage 1: VLM in parallel (BATCH)
     # -------------------------
-    vlm_results = {}  # jpg -> VlmResult (ok/caption/error)
+    vlm_results = {}
 
     def _vlm_job(task):
         jpg = task["jpg"]
@@ -1041,8 +920,8 @@ def process_folder(
         return jpg, res
 
     workers = max(1, int(getattr(args, "vlm_workers", 1)))
-
     vlm_tasks = [t for t in tasks if t["need_vlm"]]
+
     if vlm_tasks and workers > 1:
         log(f"[vlm] running batch with workers={workers} (tasks={len(vlm_tasks)})")
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -1060,7 +939,7 @@ def process_folder(
             vlm_results[jpg] = res
 
     # -------------------------
-    # Stage 2: Per-tile OWL + write tile JSON (NO Depth, NO forward-json here)
+    # Stage 2: Per-tile OWL + write tile JSON + tile ANN
     # -------------------------
     done = skipped = failed = 0
 
@@ -1071,10 +950,9 @@ def process_folder(
         jpg = t["jpg"]
         base = t["base"]
         dest_jpg_path = t["dest_jpg_path"]
-        new_json_path = t["new_json_path"]
+        tile_json_path = t["tile_json_path"]
         new_js = t["new_js"]
 
-        # handle skip
         if not t["need_vlm"]:
             skipped += 1
             continue
@@ -1082,20 +960,12 @@ def process_folder(
         res = vlm_results.get(jpg)
         if not (res and res.ok and res.caption):
             failed += 1
-            # write what we have (optional)
-            try:
-                with open(new_json_path, "w") as f:
-                    json.dump(new_js, f, indent=2)
-            except Exception:
-                pass
             continue
 
         vlm_caption = res.caption
-        print("%%%%%%%%% vlm_caption ^^^^^^^^^^^", vlm_caption)
 
-        # NanoOWL prompts
         prompts = caption_to_owl_prompts(vlm_caption)
-        print(f"[worker] Prompts: {prompts}")
+        log(f"[worker] Prompts: {prompts}")
 
         status, body, _ = _post_nanoowl_multipart(
             endpoint=NANOOWL_ENDPOINT,
@@ -1118,70 +988,107 @@ def process_folder(
         }
         new_js["nanoowl"] = nano_payload
 
-        prompt_str, response_str = extract_prompt_response(vlm_caption)
+        prompt_str = "Describe the objects in the image"
+        response_str = vlm_caption
+
         new_js["entries"].append({
             "timestamp": int(time.time()),
             "prompt": prompt_str,
             "response": response_str,
         })
 
-        # Final write of TILE json
+        # write TILE json
         try:
-            with open(new_json_path, "w") as f:
+            with open(tile_json_path, "w", encoding="utf-8") as f:
                 json.dump(new_js, f, indent=2)
-            print(f"Dumped updated TILE JSON to {new_json_path}")
         except Exception as e:
-            print(f"Error during save: {e}")
+            log(f"[worker] failed saving tile json: {e}")
 
-        # (optional) annotate per tile (still useful for debug)
+        # write TILE ann into tiles_ann_folder (NOT into R2, NOT via symlink)
         try:
-            symlink_jpg = latest_link / jpg
-            symlink_json = latest_link / f"{base}.json"
-            _annotate_from_json(str(symlink_jpg), str(symlink_json))
+            tile_ann_path = tiles_ann_folder_path / f"{base}_ann.jpg"
+            ok = _annotate_tile_to_path(
+                image_path=str(dest_jpg_path),
+                json_path=str(tile_json_path),
+                out_path=str(tile_ann_path),
+            )
+            if ok:
+                log(f"[tile_ann] wrote {tile_ann_path}")
         except Exception as e:
-            print("[annotate][error]", e)
+            log(f"[tile_ann][error] {e}")
 
         done += 1
 
-        # pacing
         if sleep_between_s > 0:
             time.sleep(sleep_between_s)
 
     # -------------------------
-    # Stage 3: Merge tiles -> Mosaic + Global JSON + Depth + Forward (ONCE)
+    # Stage 3: Merge tiles -> FINAL in out_folder (mosaic + merged json + mosaic ann + depth + forward)
     # -------------------------
     try:
         overlap_val = float(getattr(args, "overlap", 0.0)) if args is not None else 0.0
 
         out = merge_tiles_and_send(
-            new_folder_path=new_folder_path.as_posix(),
+            tiles_folder_path=tiles_folder_path.as_posix(),
+            out_folder_path=out_folder_path.as_posix(),
+            out_ann_folder_path=Path(out_ann_folder).as_posix(), 
             overlap=overlap_val,
-            depth_endpoint=depth_endpoint,             
-            forward_json_url=FORWARD_JSON_URL,        
+            depth_endpoint=depth_endpoint,
+            forward_json_url=FORWARD_JSON_URL,
             forward_timeout=FORWARD_JSON_TIMEOUT,
             forward_retries=FORWARD_JSON_RETRIES,
             depth_timeout=30.0,
             iou_thr=0.6,
         )
-        print("[merge] outputs:", out)
+        log(f"[merge] outputs: {out}")
     except Exception as e:
-        print("[merge][fatal]", e)
+        log(f"[merge][fatal] {e}")
 
     return (done, skipped, failed)
 
 
 
 def run_process_once(args):
-    latest = Path(CAPTURES_ROOT) / "latest"
+    tiles_latest = Path(args.tiles_root) / "latest"
+    if not tiles_latest.exists():
+        log("[worker] No tiles latest symlink/folder")
+        return None
 
-    parent = latest.parent
-    new_folder_name = datetime.datetime.now().strftime("%Y_%m_%d___%H_%M_%S")
-    new_folder_path = Path(parent / new_folder_name)
+    tiles_run_dir = tiles_latest.resolve()
+    if not tiles_run_dir.is_dir():
+        log(f"[worker] tiles_latest is not a dir: {tiles_run_dir}")
+        return None
 
-    log(f"[worker] Latest folder: {latest}")
+    run_id = tiles_run_dir.name
+
+    src_jpgs = sorted([
+        f.name for f in tiles_run_dir.glob("*.jpg")
+        if f.suffix.lower() == ".jpg" and not f.name.lower().endswith("_ann.jpg")
+    ])
+    if not src_jpgs:
+        log("[worker] No JPGs in tiles/latest")
+        return tiles_run_dir
+
+    tiles_ann_dir = Path(args.tiles_root) / TILES_ANN_SUBDIR / run_id
+    out_root      = Path(args.out_root)
+    out_run_dir   = out_root / run_id
+    out_ann_dir   = out_root / f"{run_id}_ANN"
+
+    tiles_ann_dir.mkdir(parents=True, exist_ok=True)
+    out_run_dir.mkdir(parents=True, exist_ok=True)
+    out_ann_dir.mkdir(parents=True, exist_ok=True)
+
+    log(f"[worker] run_id={run_id}")
+    log(f"[worker] tiles_run_dir(in-place)={tiles_run_dir}")
+    log(f"[worker] tiles_ann_dir={tiles_ann_dir}")
+    log(f"[worker] out_run_dir={out_run_dir}")
+
     done, skipped, failed = process_folder(
-        folder=latest.as_posix(),
-        new_folder=new_folder_path.as_posix(),
+        folder=tiles_run_dir.as_posix(),           
+        tiles_folder=tiles_run_dir.as_posix(),      
+        tiles_ann_folder=tiles_ann_dir.as_posix(),
+        out_folder=out_run_dir.as_posix(),
+        out_ann_folder=out_ann_dir.as_posix(),
         endpoint=args.endpoint,
         depth_endpoint=args.depth_endpoint,
         path_src=args.path_src,
@@ -1192,26 +1099,25 @@ def run_process_once(args):
         force=args.force,
         sleep_between_s=args.sleep_between,
         args=args,
-
     )
+
+    # update OUT latest symlink
+    latest_link = out_root / "latest"
+    try:
+        if os.path.lexists(latest_link):
+            os.remove(latest_link)
+        os.symlink(out_run_dir, latest_link)
+        log(f"[worker] Updated OUT latest -> {out_run_dir}")
+    except Exception as e:
+        log(f"[worker] Failed to update OUT latest symlink: {e}")
+
     log(f"[worker] summary: done={done} skipped={skipped} failed={failed}")
-    return latest
+    return tiles_run_dir
 
 def update_cb(cb):
     update_cb.VILLA_RESULTS_CB = cb
     print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&777 update cb", cb)
 
-
-
-def _find_specific_image(root_dir, filename):
-    """
-    Locates a specific file within the recursive captures tree.
-    """
-    for p in Path(root_dir).rglob(filename):
-        img_path = str(p)
-        json_path = str(p.with_suffix('.json'))
-        return img_path, json_path
-    return None, None
 
 
 @app.get("/latest")
@@ -1297,6 +1203,15 @@ def main():
     p.add_argument("--vlm-workers", type=int, default=4,
                help="How many VLM requests to run in parallel (batch concurrency)")
 
+    p.add_argument("--overlap", type=float, default=0.0,
+               help="Tile overlap used in capture (e.g. 0.3)")
+
+
+    p.add_argument("--tiles-root", default=TILES_ROOT_DEFAULT,
+               help="Where to store all tiles + tile JSONs")
+    p.add_argument("--out-root", default=OUT_ROOT_DEFAULT,
+               help="Where to store FINAL mosaic + merged json")
+
     args = p.parse_args()
 
     from config.profile_loader import load_profile
@@ -1351,23 +1266,25 @@ def main():
     print(f"[comm_manager] listening on {args.host}:{args.port}")
     print(f"  captures_root    = {CAPTURES_ROOT}")
     print(f"  nanoowl_endpoint = {NANOOWL_ENDPOINT} (annotate={NANOOWL_ANNOTATE})")
-    # Start the folder processing loop in a background thread
-    worker_thread = threading.Thread(target=run_process_once, args=(args,), daemon=True)
-    worker_thread.start()
 
     def handle_shutdown(signum, frame):
         log(f"[Main] Shutdown signal ({signum}) received. Releasing worker...")
         shutdown_event.set()
-        sys.exit(0)
 
+    def worker_loop(args):
+        while not shutdown_event.is_set():
+            try:
+                run_process_once(args)
+            except Exception as e:
+                log(f"[worker][fatal] {e}")
+            time.sleep(args.watch_interval)
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
-
+    worker_thread = threading.Thread(target=worker_loop, args=(args,), daemon=True)
+    worker_thread.start()
 
     app.run(host=args.host, port=args.port)
-    run_process_once(args)
-
 
 
 
