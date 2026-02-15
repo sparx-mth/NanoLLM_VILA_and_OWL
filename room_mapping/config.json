@@ -24,12 +24,21 @@
     "timeout": 120
   },
 
+    "_diagram": [
+    "    ┌── north (y=0) ───┐"     ,
+    "    │                  │"     ,
+    "  west(x=0)        east(x=W)" ,
+    "    │                  │"     ,
+    "    └── south (y=H) ───┘"
+  ],
+
   "camera": {
     "camera_wall": "south",
     "camera_position_along_wall": null,
     "camera_fov_h": 100,
     "camera_fov_v": 50
   },
+
 
   "room": {
     "mode": "standalone",
