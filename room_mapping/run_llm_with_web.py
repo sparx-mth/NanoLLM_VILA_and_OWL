@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 run_all_with_web.py - Run all house mapping components with Web GUI
-Now includes the mission to agent command monitor
+Now includes the mission to agent command monitor.
+All CLI --args are forwarded to every subprocess via config.py.
 """
 
 import subprocess
@@ -11,8 +12,24 @@ import os
 import glob
 import webbrowser
 from pathlib import Path
+from house_config import get_config
+
+cfg = get_config()
 
 BASE_PATH = str(Path(__file__).resolve().parent.parent)
+
+# CLI args to forward to subprocesses (everything after script name)
+_EXTRA_ARGS = sys.argv[1:]
+
+
+def _spawn(script_name):
+    """Launch a subprocess with the same CLI overrides."""
+    return subprocess.Popen(
+        [sys.executable, script_name] + _EXTRA_ARGS,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
 
 
 def main():
@@ -21,17 +38,16 @@ def main():
     print("=" * 60)
 
     # Ask about cleaning directory
-    bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
+    bbox_dir = os.path.join(BASE_PATH, "room_mapping", cfg.ingest_out_dir)
     json_files = []
     if os.path.exists(bbox_dir):
-        # Look for ALL .json files, not just *_dets.json
         json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
 
     if json_files:
         print(f"\nFound {len(json_files)} existing JSON files in:")
         print(f"  {bbox_dir}")
         print("\nFiles found:")
-        for f in json_files[:5]:  # Show first 5 files
+        for f in json_files[:5]:
             print(f"  - {os.path.basename(f)}")
         if len(json_files) > 5:
             print(f"  ... and {len(json_files) - 5} more")
@@ -48,16 +64,15 @@ def main():
                     pass
 
             # Also clean output files
-            for f in ["current_mission.txt", "agent_commands.txt",
-                       "task_request.json", "mission_response.txt"]:
+            for f in [cfg.mission_file, cfg.agent_commands_file,
+                       cfg.task_request_file, cfg.mission_response_file]:
                 if os.path.exists(f):
                     os.remove(f)
                     print(f"  Removed: {f}")
 
             # Clean data folder
-            data_dir = "data"
-            if os.path.exists(data_dir):
-                for f in glob.glob(os.path.join(data_dir, "*")):
+            if os.path.exists(cfg.data_dir):
+                for f in glob.glob(os.path.join(cfg.data_dir, "*")):
                     try:
                         os.remove(f)
                         print(f"  Removed: {f}")
@@ -73,16 +88,10 @@ def main():
     try:
         # 1. Start receiver_owl first
         print("\n[1/7] Starting Receiver OWL (processes incoming images)...")
-        receiver = subprocess.Popen(
-            [sys.executable, "receiver_owl.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        receiver = _spawn("receiver_owl.py")
         processes.append(("Receiver OWL", receiver))
 
-        # Check for existing detection files (non-blocking)
-        bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
+        # Check for existing detection files
         if os.path.exists(bbox_dir):
             json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
             if json_files:
@@ -94,70 +103,45 @@ def main():
 
         # 2. Start the rest of the components
         print("\n[2/7] Starting Room Unifier (monitors for new scans)...")
-        unifier = subprocess.Popen(
-            [sys.executable, "pixel_room_mapper.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        unifier = _spawn("pixel_room_mapper.py")
         processes.append(("Room Unifier", unifier))
-        time.sleep(2)  # Let it initialize
+        time.sleep(2)
 
         print("[3/7] Starting LLM Mission Processor...")
-        llm_processor = subprocess.Popen(
-            [sys.executable, "llm_mission_processor.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        llm_processor = _spawn("llm_mission_processor.py")
         processes.append(("LLM Processor", llm_processor))
-        time.sleep(2)  # Let it initialize
+        time.sleep(2)
 
-        # 3. Start renderer (auto-refreshes the visualization)
+        # 3. Start renderer
         print("[4/7] Starting House Renderer (auto-refresh enabled)...")
-        renderer = subprocess.Popen(
-            [sys.executable, "render_house.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        renderer = _spawn("render_house.py")
         processes.append(("Renderer", renderer))
         time.sleep(1)
 
         # 4. Start Web Mission Server
         print("[5/7] Starting Web Mission Server...")
-        web_server = subprocess.Popen(
-            [sys.executable, "web_mission_server_llm.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        web_server = _spawn("web_mission_server_llm.py")
         processes.append(("Web Server", web_server))
-        time.sleep(2)  # Give server time to start
+        time.sleep(2)
 
         # 5. Start Mission to Agent Monitor (Second LLM)
         print("[6/7] Starting Agent Command Monitor (Second LLM)...")
-        agent_monitor = subprocess.Popen(
-            [sys.executable, "mission_to_agent_commands.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        agent_monitor = _spawn("mission_to_agent_commands.py")
         processes.append(("Agent Monitor", agent_monitor))
         time.sleep(1)
 
         # 6. Open browser
         print("[7/7] Opening web browser...")
-        webbrowser.open("http://localhost:8080")
+        webbrowser.open(f"http://localhost:{cfg.web_port}")
 
         print("\n" + "=" * 60)
         print("ALL SYSTEMS RUNNING!")
         print("=" * 60)
-        print("\n🌐 Web GUI is available at: http://localhost:8080")
-        print("🚁 You can now use the web interface to send navigation tasks")
-        print("🤖 Dual LLM Pipeline Active:")
-        print("   1. Mission Generator LLM creates navigation instructions")
-        print("   2. Agent Command LLM converts to step-by-step commands")
+        print(f"\nWeb GUI is available at: http://localhost:{cfg.web_port}")
+        print("You can now use the web interface to send navigation tasks")
+        print("Dual LLM Pipeline Active:")
+        print(f"   1. Mission Generator LLM ({cfg.mission_model})")
+        print(f"   2. Agent Command LLM ({cfg.agent_model})")
         print("\nPress Ctrl+C to stop all components")
         print("=" * 60)
 
@@ -165,44 +149,30 @@ def main():
         while True:
             time.sleep(1)
 
-            # Check if any critical process has died
             for name, proc in processes:
-                if proc.poll() is not None:  # Process terminated
+                if proc.poll() is not None:
                     print(f"\n Warning: {name} has stopped")
                     if name == "Web Server":
                         print("Restarting Web Server...")
-                        web_server = subprocess.Popen(
-                            [sys.executable, "web_mission_server_llm.py"],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True
-                        )
-                        # Update the process in the list
+                        new_proc = _spawn("web_mission_server_llm.py")
                         for i, (n, p) in enumerate(processes):
                             if n == "Web Server":
-                                processes[i] = ("Web Server", web_server)
+                                processes[i] = ("Web Server", new_proc)
                                 break
                     elif name == "Agent Monitor":
                         print("Restarting Agent Monitor...")
-                        agent_monitor = subprocess.Popen(
-                            [sys.executable, "mission_to_agent_commands.py"],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True
-                        )
-                        # Update the process in the list
+                        new_proc = _spawn("mission_to_agent_commands.py")
                         for i, (n, p) in enumerate(processes):
                             if n == "Agent Monitor":
-                                processes[i] = ("Agent Monitor", agent_monitor)
+                                processes[i] = ("Agent Monitor", new_proc)
                                 break
 
     except KeyboardInterrupt:
         print("\n\nShutting down all components...")
 
     finally:
-        # Clean shutdown
         for name, proc in processes:
-            if proc.poll() is None:  # Still running
+            if proc.poll() is None:
                 print(f"Stopping {name}...")
                 proc.terminate()
                 try:
@@ -223,7 +193,8 @@ if __name__ == "__main__":
         "web_mission_server_llm.py",
         "mission_to_agent_commands.py",
         "llm_mission_processor.py",
-        "index.html"
+        "index.html",
+        "house_config.py"
     ]
 
     missing = [f for f in required_files if not os.path.exists(f)]

@@ -14,9 +14,11 @@ Grid coords:  origin = top-left (NW),  +X = east,  +Y = south.
 import numpy as np, json, math, os, glob, time, hashlib
 from typing import Dict, Tuple, Optional
 from pathlib import Path
+from house_config import get_config
+
+cfg = get_config()
 
 BASE_PATH = str(Path(__file__).resolve().parent.parent)
-DEFAULT_DISTANCE_M = 5.0
 
 
 # ── Tile Manager ─────────────────────────────────────────────────────
@@ -205,7 +207,7 @@ class PixelRoomMapper:
 
         self.tiles = DynamicTileManager(existing_registry)
         self.all_objects = []
-        self.duplicate_overlap_threshold = 0.5  # allow same-class objects in different locations
+        self.duplicate_overlap_threshold = 0.5
 
     # ── Helpers ──
 
@@ -240,7 +242,6 @@ class PixelRoomMapper:
 
     def calculate_position(self, bbox, yaw, fw, depth_m, intrinsics=None, max_depth_col_m=None):
         cx_px = (bbox[0] + bbox[2]) / 2
-        # Forward depth: proportional to object's own wall distance
         if max_depth_col_m and max_depth_col_m > 0.01:
             ratio = depth_m / max_depth_col_m
             fwd = ratio * (self.room_height_m if abs(math.cos(yaw)) > 0.5 else self.room_width_m)
@@ -289,20 +290,19 @@ class PixelRoomMapper:
             if not obj_class: continue
 
             bbox = det['bbox']
-            depth_m = det.get("depth_m", DEFAULT_DISTANCE_M)
+            depth_m = det.get("depth_m", cfg.default_distance_m)
             max_depth = det.get("max_depth_col_m")
             tile_type = self.tiles.get_tile_type(obj_class)
             ox, oy = self.calculate_position(bbox, yaw, fw, depth_m, intrinsics, max_depth)
             wm, hm = self.estimate_object_size(bbox, fw, fh, depth_m, intrinsics)
 
-            # Shift position so object stays fully inside room walls
             margin = 0.05
             ox = max(margin + wm / 2, min(self.room_width_m - margin - wm / 2, ox))
             oy = max(margin + hm / 2, min(self.room_height_m - margin - hm / 2, oy))
 
             gx, gy = self.meters_to_grid(ox, oy)
             wc, hc = max(1, int(wm / self.res_x)), max(1, int(hm / self.res_y))
-            if abs(math.sin(yaw)) > abs(math.cos(yaw)):  # east/west → swap axes
+            if abs(math.sin(yaw)) > abs(math.cos(yaw)):
                 wc, hc = hc, wc
 
             x1, y1 = gx - wc // 2, gy - hc // 2
@@ -359,8 +359,9 @@ class PixelRoomMapper:
 
     # ── Save ──
 
-    def save(self, json_file="data/unified_rooms.json",
-             map_file="data/house_map.txt"):
+    def save(self, json_file=None, map_file=None):
+        json_file = json_file or cfg.unified_rooms_json
+        map_file = map_file or cfg.house_map_txt
         grid = self.create_grid_map()
         cx, cy = self.camera_to_grid()
         if self.mode == "existing_map":
@@ -397,7 +398,7 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
                   camera_position_along_wall=None, grid_resolution=None,
                   grid_cells=51,
                   room_width_m=None, room_height_m=None):
-    bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
+    bbox_dir = os.path.join(BASE_PATH, "room_mapping", cfg.ingest_out_dir)
     json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
     if not json_files:
         print(f"No JSON files in {bbox_dir}"); return 0
@@ -421,14 +422,6 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
     if room_height_m is not None: config["room_height_m"] = room_height_m
 
     # 3. Derive per-axis resolution from grid_cells
-    #    grid_cells: int → same both axes, tuple → (along_wall, into_room)
-    #    north/south: along_wall = width(X),  into_room = height(Y)
-    #    east/west:   along_wall = height(Y),  into_room = width(X)
-    #
-    #    Resolution maps wall_depth → last INTERIOR cell (not wall cell).
-    #    Grid row 0 = camera wall, row N-1 = far wall → interior = 1..(N-2).
-    #    res = wall_size / (cells - 2).  Room extends slightly past wall
-    #    for the boundary cells.
     if grid_resolution is None:
         if isinstance(grid_cells, (list, tuple)):
             lat_cells, depth_cells = grid_cells
@@ -444,7 +437,6 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
         wall_h = config["room_height_m"]
         res_x = wall_w / max(1, cw - 2)
         res_y = wall_h / max(1, ch - 2)
-        # Inflate room to include wall boundary cells
         config["room_width_m"]  = res_x * cw
         config["room_height_m"] = res_y * ch
         grid_resolution = (res_x + res_y) / 2
@@ -470,7 +462,8 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
         res_x=res_x, res_y=res_y,
         existing_map_file=existing_map, existing_json_file=existing_json,
         room_bbox=room_bbox, room_name=room_name,
-        camera_fov_h=100, camera_fov_v=50 if mode == "standalone" else 60,
+        camera_fov_h=cfg.camera_fov_h,
+        camera_fov_v=cfg.camera_fov_v if mode == "standalone" else 60,
         camera_x_m=config["camera_x_m"], camera_y_m=config["camera_y_m"])
 
     # 5. Process each file
@@ -514,38 +507,30 @@ def write_empty_room(grid_cells=51, camera_wall="west"):
         "tile_registry": tiles.get_all_tiles(),
         "tile_colors": tiles.get_color_registry_hex()}
 
-    os.makedirs("data", exist_ok=True)
-    with open("data/unified_rooms.json", 'w') as f:
+    os.makedirs(cfg.data_dir, exist_ok=True)
+    with open(cfg.unified_rooms_json, 'w') as f:
         json.dump(output, f, indent=2)
-    np.savetxt("data/house_map.txt", grid, fmt='%d')
+    np.savetxt(cfg.house_map_txt, grid, fmt='%d')
     print(f"[{time.strftime('%H:%M:%S')}] Wrote empty room ({cw}x{ch})")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
-    # ╔═══════════════════════════════════════════════════════╗
-    # ║  CONFIGURATION — edit these values for your setup     ║
-    # ╚═══════════════════════════════════════════════════════╝
+    # All configuration now comes from config.json + CLI overrides
+    mode          = cfg.mode
+    existing_map  = cfg.existing_map
+    existing_json = cfg.existing_json
+    room_bbox     = cfg.room_bbox
+    room_name     = cfg.room_name
 
-    mode          = "standalone"   # "standalone" or "existing_map"
-    existing_map  = None           # path to existing map .txt
-    existing_json = None           # path to existing .json
-    room_bbox     = None           # e.g. (23, 10, 40, 24)
-    room_name     = "main_room"
+    camera_wall   = cfg.camera_wall
+    camera_position_along_wall = cfg.camera_position_along_wall
 
-    #         ┌── north ──┐
-    #       west        east
-    #         └── south ──┘
-    camera_wall = "south"          # "north" / "south" / "east" / "west"
-    camera_position_along_wall = None  # metres along wall, None = middle
-
-    grid_cells     = (51,51)            # int or (along_wall, into_room) tuple
-    grid_resolution = None         # m/cell, None = auto from grid_cells
-    room_width_m   = None          # override width  (m), None = auto
-    room_height_m  = None          # override height (m), None = auto
-
-    # ════════════════════════════════════════════════════════
+    grid_cells     = cfg.grid_cells
+    grid_resolution = cfg.grid_resolution
+    room_width_m   = cfg.room_width_m
+    room_height_m  = cfg.room_height_m
 
     if room_bbox and existing_map:
         mode = "existing_map"
@@ -559,7 +544,7 @@ def main():
     print(f"Camera: {camera_wall} wall, pos={camera_position_along_wall or 'middle'}")
     print("Monitoring for detection files...  (Ctrl+C to stop)\n")
 
-    bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
+    bbox_dir = os.path.join(BASE_PATH, "room_mapping", cfg.ingest_out_dir)
     last_count = -1
     try:
         while True:
@@ -573,12 +558,12 @@ def main():
                         camera_position_along_wall=camera_position_along_wall,
                         grid_resolution=grid_resolution, grid_cells=grid_cells,
                         room_width_m=room_width_m, room_height_m=room_height_m)
-                    if n: print(f"Processed {n} files -> unified_rooms.json + house_map.txt")
+                    if n: print(f"Processed {n} files -> {cfg.unified_rooms_json} + {cfg.house_map_txt}")
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
                     write_empty_room(grid_cells=grid_cells, camera_wall=camera_wall)
                 last_count = len(files)
-            time.sleep(2)
+            time.sleep(cfg.mapper_poll_interval)
     except KeyboardInterrupt:
         print("\n\nStopped.")
 

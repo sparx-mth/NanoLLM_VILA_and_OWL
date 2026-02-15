@@ -10,11 +10,9 @@ import subprocess
 import tempfile
 import os
 import time
+from house_config import get_config
 
-# File paths for communication
-TASK_REQUEST_FILE = "task_request.json"
-MISSION_RESPONSE_FILE = "mission_response.txt"
-MISSION_FILE = "current_mission.txt"
+cfg = get_config()
 
 # Your existing PROMPT - copy it here
 PROMPT = """You are a mission planner for an autonomous drone that navigates houses. The drone needs clear navigation instructions based on a house map and user requests.
@@ -83,7 +81,7 @@ Generate the navigation instruction:"""
 def load_house_data():
     """Load and format house data clearly for LLM"""
     try:
-        with open("data/unified_rooms.json", 'r') as f:
+        with open(cfg.unified_rooms_json, 'r') as f:
             house_data = json.load(f)
 
         # Create clear structure showing rooms and their objects
@@ -129,8 +127,8 @@ def ask_ollama(house_json, user_task):
         temp_file = f.name
 
     try:
-        cmd = f"cat {temp_file} | ollama run llama3.1:8b"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        cmd = f"cat {temp_file} | ollama run {cfg.mission_model}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=cfg.timeout)
         response = result.stdout.strip()
         os.unlink(temp_file)
         return response
@@ -157,8 +155,9 @@ def process_loop():
     print("LLM MISSION PROCESSOR")
     print("=" * 60)
     print("Monitoring for task requests...")
-    print(f"Reading from: {TASK_REQUEST_FILE}")
-    print(f"Writing to: {MISSION_RESPONSE_FILE}")
+    print(f"Reading from: {cfg.task_request_file}")
+    print(f"Writing to: {cfg.mission_response_file}")
+    print(f"LLM model: {cfg.mission_model}")
     print("-" * 60)
 
     last_modified = 0
@@ -166,12 +165,12 @@ def process_loop():
     while True:
         try:
             # Check if task request file exists and has changed
-            if os.path.exists(TASK_REQUEST_FILE):
-                current_modified = os.path.getmtime(TASK_REQUEST_FILE)
+            if os.path.exists(cfg.task_request_file):
+                current_modified = os.path.getmtime(cfg.task_request_file)
 
                 if current_modified > last_modified:
                     # Read the task request
-                    with open(TASK_REQUEST_FILE, 'r') as f:
+                    with open(cfg.task_request_file, 'r') as f:
                         request_data = json.load(f)
 
                     task = request_data.get('task', '')
@@ -186,21 +185,21 @@ def process_loop():
                     else:
                         house_json = json.dumps(house_data, indent=2)
                         # Generate mission using LLM
-                        print("🤖 Generating mission...")
+                        print("Generating mission...")
                         response = ask_ollama(house_json, task)
                         print(f" Mission generated: {response[:100]}...")
 
                     # Save response
-                    with open(MISSION_RESPONSE_FILE, 'w') as f:
+                    with open(cfg.mission_response_file, 'w') as f:
                         f.write(response)
 
                     # Also save to current_mission.txt for agent processor
-                    with open(MISSION_FILE, 'w') as f:
+                    with open(cfg.mission_file, 'w') as f:
                         f.write(response)
 
                     last_modified = current_modified
 
-            time.sleep(0.5)
+            time.sleep(cfg.llm_poll_interval)
 
         except KeyboardInterrupt:
             print("\n\nShutting down LLM processor...")
@@ -214,7 +213,7 @@ def main():
     clean_ollama_cache()
 
     # Clean up old files
-    for f in [MISSION_RESPONSE_FILE]:
+    for f in [cfg.mission_response_file]:
         if os.path.exists(f):
             os.remove(f)
             print(f"Cleaned old {f}")

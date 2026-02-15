@@ -13,6 +13,9 @@ import tempfile
 import os
 import threading
 import time
+from house_config import get_config
+
+cfg = get_config()
 
 app = Flask(__name__, static_folder='.')
 CORS(app)  # Enable CORS for all routes
@@ -21,16 +24,11 @@ CORS(app)  # Enable CORS for all routes
 latest_house_data = None
 data_lock = threading.Lock()
 
-# File for mission exchange
-MISSION_FILE = "current_mission.txt"
-
-
-
 
 def load_house_data():
     """Load and format house data clearly for LLM"""
     try:
-        with open("data/unified_rooms.json", 'r') as f:
+        with open(cfg.unified_rooms_json, 'r') as f:
             house_data = json.load(f)
 
         # Create clear structure showing rooms and their objects
@@ -48,8 +46,8 @@ def load_house_data():
 
             # Make it clear what's in each room
             simplified["rooms"][room_name] = {
-                "bbox": room_info.get('bbox'),  # Keep bbox for position reference
-                "objects": object_types,  # List of object names in this room
+                "bbox": room_info.get('bbox'),
+                "objects": object_types,
                 "object_count": len(object_types),
                 "doors": room_info.get('doors', [])
             }
@@ -75,25 +73,19 @@ def background_updater():
         if new_data:
             with data_lock:
                 latest_house_data = new_data
-        time.sleep(1)  # Update every second
-
-
-
+        time.sleep(cfg.data_update_interval)
 
 
 def check_agent_commands(min_timestamp=None):
-    """Return agent commands only if the file is newer than min_timestamp.
-       Do NOT delete it here; the timestamp is our guard."""
-    agent_file = "agent_commands.txt"
-    if os.path.exists(agent_file):
+    """Return agent commands only if the file is newer than min_timestamp."""
+    if os.path.exists(cfg.agent_commands_file):
         try:
-            if (min_timestamp is None) or (os.path.getmtime(agent_file) > float(min_timestamp)):
-                with open(agent_file, 'r') as f:
+            if (min_timestamp is None) or (os.path.getmtime(cfg.agent_commands_file) > float(min_timestamp)):
+                with open(cfg.agent_commands_file, 'r') as f:
                     return f.read().strip()
         except:
             return None
     return None
-
 
 
 @app.route('/')
@@ -134,13 +126,12 @@ def generate_mission():
             'task': task,
             'timestamp': time.time()
         }
-        with open("task_request.json", 'w') as f:
+        with open(cfg.task_request_file, 'w') as f:
             json.dump(request_data, f)
-        print(f"Task request written to task_request.json")
+        print(f"Task request written to {cfg.task_request_file}")
 
         # Wait for both mission response and its matching agent commands
-        response_file = "mission_response.txt"
-        timeout = 120
+        timeout = cfg.timeout
         start_time = time.time()
 
         mission_text = None
@@ -148,9 +139,9 @@ def generate_mission():
 
         while time.time() - start_time < timeout:
             # 1) Mission text produced by llm_mission_processor.py
-            if os.path.exists(response_file):
-                if os.path.getmtime(response_file) > request_data['timestamp']:
-                    with open(response_file, 'r') as f:
+            if os.path.exists(cfg.mission_response_file):
+                if os.path.getmtime(cfg.mission_response_file) > request_data['timestamp']:
+                    with open(cfg.mission_response_file, 'r') as f:
                         mission_text = f.read().strip()
 
             # 2) Agent commands produced by mission_to_agent_commands.py
@@ -162,14 +153,13 @@ def generate_mission():
                     'agent_commands': agent_commands
                 })
 
-            time.sleep(0.25)
+            time.sleep(cfg.web_poll_interval)
 
         # If we timeout, return whatever we have
         return jsonify({
             'response': mission_text or 'Timeout waiting for LLM processor. Make sure llm_mission_processor.py is running.',
             'agent_commands': agent_commands or ''
         }), (200 if mission_text else 504)
-
 
     except Exception as e:
         print(f"Error in generate_mission: {e}")
@@ -179,7 +169,6 @@ def generate_mission():
 @app.route('/SPARX.jpg')
 def serve_logo():
     """Serve the SPARX logo image"""
-    import os
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sparx_logo.png')
 
     if os.path.exists(logo_path):
@@ -193,13 +182,10 @@ def serve_logo():
 @app.route('/api/map', methods=['GET'])
 def get_map():
     """Serve the current map image"""
-    import os
-
-    # Use absolute path
-    map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'current_map.png')
+    map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            cfg.current_map_png)
 
     if os.path.exists(map_path):
-        # Fix: Use proper path and add as_attachment=False
         return send_file(map_path,
                          mimetype='image/png',
                          as_attachment=False,
@@ -211,12 +197,10 @@ def get_map():
 @app.route('/api/map_status', methods=['GET'])
 def get_map_status():
     """Check if map exists and when it was last updated"""
-    map_path = 'data/current_map.png'
-
-    if os.path.exists(map_path):
+    if os.path.exists(cfg.current_map_png):
         return jsonify({
             'available': True,
-            'last_updated': os.path.getmtime(map_path)
+            'last_updated': os.path.getmtime(cfg.current_map_png)
         })
     else:
         return jsonify({
@@ -230,7 +214,6 @@ def api_check_agent_commands():
     since = request.args.get('since', None)
     commands = check_agent_commands(min_timestamp=since)
     return jsonify({'agent_commands': commands or ''})
-
 
 
 def main():
@@ -248,7 +231,7 @@ def main():
     # Initial load
     latest_house_data = load_house_data()
     if not latest_house_data:
-        print("WARNING: unified_rooms.json not found.")
+        print(f"WARNING: {cfg.unified_rooms_json} not found.")
         print("Run pixel_room_mapper.py first to generate the house structure.")
     else:
         print("Loaded house data successfully")
@@ -261,15 +244,15 @@ def main():
     # Start background updater thread
     updater = threading.Thread(target=background_updater, daemon=True)
     updater.start()
-    print("\nAuto-reload enabled (updates every second)")
+    print(f"\nAuto-reload enabled (updates every {cfg.data_update_interval}s)")
 
     print("-" * 40)
-    print("Starting web server on http://localhost:8080")
+    print(f"Starting web server on http://localhost:{cfg.web_port}")
     print("Open your browser and navigate to the URL above")
     print("-" * 40)
 
     # Run Flask server
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    app.run(host=cfg.web_host, port=cfg.web_port, debug=False)
 
 
 if __name__ == "__main__":
