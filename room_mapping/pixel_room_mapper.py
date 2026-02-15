@@ -177,8 +177,8 @@ class PixelRoomMapper:
             self.res_x = res_x if res_x is not None else grid_resolution
             self.res_y = res_y if res_y is not None else grid_resolution
             self.grid_resolution = grid_resolution
-            self.grid_width = round(room_width_m / self.res_x)
-            self.grid_height = round(room_height_m / self.res_y)
+            self.grid_width = int(room_width_m / self.res_x + 0.5)
+            self.grid_height = int(room_height_m / self.res_y + 0.5)
             self.camera_x_m = camera_x_m if camera_x_m is not None else room_width_m / 2
             self.camera_y_m = camera_y_m if camera_y_m is not None else room_height_m / 2
             self.room_bbox = (0, 0, self.grid_width, self.grid_height)
@@ -217,12 +217,12 @@ class PixelRoomMapper:
                 max(0, min(self.grid_height - 1, int(y_m / self.res_y))))
 
     def camera_to_grid(self):
-        def snap(val, limit, res):
+        def snap(val, limit, res, grid_size):
             if val <= 0: return 0
-            if val >= limit: return int(limit / res) - 1
-            return max(0, min(int(limit / res) - 1, int(val / res)))
-        return snap(self.camera_x_m, self.room_width_m, self.res_x), \
-               snap(self.camera_y_m, self.room_height_m, self.res_y)
+            if val >= limit: return grid_size - 1
+            return max(0, min(grid_size - 1, int(val / res)))
+        return snap(self.camera_x_m, self.room_width_m, self.res_x, self.grid_width), \
+               snap(self.camera_y_m, self.room_height_m, self.res_y, self.grid_height)
 
     # ── Size & Position ──
 
