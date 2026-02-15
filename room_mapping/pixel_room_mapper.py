@@ -525,7 +525,7 @@ def write_empty_room(grid_cells=51, camera_wall="west"):
 
 def main():
     # ╔═══════════════════════════════════════════════════════╗
-    # ║  CONFIGURATION — edit these values for your setup    ║
+    # ║  CONFIGURATION — edit these values for your setup     ║
     # ╚═══════════════════════════════════════════════════════╝
 
     mode          = "standalone"   # "standalone" or "existing_map"
