@@ -1,269 +1,127 @@
 #!/usr/bin/env python3
 """
-pixel_room_mapper.py - Dual-mode room mapper with Depth Anything support
+pixel_room_mapper.py — Room mapper with Depth Anything support.
 
-Features:
-  - Auto room dimensions from wall depth measurements (first JSON file)
-  - Easy camera_wall selector: "north" / "south" / "east" / "west"
-  - Per-object depth from Depth Anything (falls back to DEFAULT_DISTANCE_M)
-  - Both old (nanoowl/pose) and new (Depth Anything) JSON formats
+Grid coords:  origin = top-left (NW),  +X = east,  +Y = south.
 
-Room coordinate system (grid):
-    Origin = top-left corner (northwest)
-    +X  = east  (right in grid)
-    +Y  = south (down in grid)
-
-    ┌──── North wall (y=0) ────┐
-    │                          │
-  West                       East
-  (x=0)                    (x=W)
-    │                          │
-    └──── South wall (y=H) ────┘
+    ┌── North (y=0) ──┐
+    │                  │
+  West(x=0)        East(x=W)
+    │                  │
+    └── South (y=H) ──┘
 """
 
-import numpy as np
-import json
-import math
-import os
-import glob
-import time
-from typing import Dict, List, Tuple, Optional
+import numpy as np, json, math, os, glob, time, hashlib
+from typing import Dict, Tuple, Optional
 from pathlib import Path
 
 BASE_PATH = str(Path(__file__).resolve().parent.parent)
-
-# Default depth when Depth Anything data is not available
 DEFAULT_DISTANCE_M = 5.0
 
 
-# ======================================================================
-# Tile manager
-# ======================================================================
+# ── Tile Manager ─────────────────────────────────────────────────────
 
 class DynamicTileManager:
-    """Manages dynamic tile types and their display colours."""
+    """Tile registry with 29 perceptually-distinct colours + overlap blending."""
 
-    # 4 special tiles + 25 maximally-distinct object colours
-    # Chosen for perceptual distance — no two neighbours look alike.
     PALETTE = [
-        # --- special tiles (0-3) ---
-        (240, 240, 240),  # 0  free_space  – almost white
-        ( 45,  45,  45),  # 1  wall        – dark charcoal
-        (  0, 210,  80),  # 2  camera      – vivid green
-        (160, 100,  40),  # 3  door        – warm brown
-        # --- object colours (4-28) ---
-        (230,  25,  75),  # 4  – crimson red
-        (  0, 130, 200),  # 5  – strong blue
-        (255, 190,   0),  # 6  – golden yellow
-        (145,  30, 180),  # 7  – purple
-        (245, 130,  48),  # 8  – orange
-        ( 70, 240, 240),  # 9  – cyan
-        (240,  50, 230),  # 10 – magenta / hot pink
-        ( 210, 245,  60),  # 11 – lime
-        (  0, 128, 128),  # 12 – teal
-        (170, 110,  40),  # 13 – chocolate
-        (128, 128,   0),  # 14 – olive
-        (  0,  75, 145),  # 15 – navy blue
-        (128,   0,   0),  # 16 – maroon
-        (255, 215, 180),  # 17 – peach / apricot
-        (170, 255, 195),  # 18 – mint
-        (230, 190, 255),  # 19 – lavender
-        (255, 250, 200),  # 20 – cream
-        ( 60, 180,  75),  # 21 – forest green
-        (220, 190, 255),  # 22 – soft violet
-        (255, 127,  80),  # 23 – coral
-        (  0, 200, 160),  # 24 – jade / aquamarine
-        (188, 143, 143),  # 25 – rosy brown
-        ( 75,   0, 130),  # 26 – indigo
-        (255,  99,  71),  # 27 – tomato red
-        (  0, 191, 255),  # 28 – deep sky blue
+        (240,240,240), (45,45,45),    (0,210,80),    (160,100,40),   # free/wall/camera/door
+        (230,25,75),   (0,130,200),   (255,190,0),   (145,30,180),   # 4-7
+        (245,130,48),  (70,240,240),  (240,50,230),  (210,245,60),   # 8-11
+        (0,128,128),   (170,110,40),  (128,128,0),   (0,75,145),     # 12-15
+        (128,0,0),     (255,215,180), (170,255,195), (230,190,255),  # 16-19
+        (255,250,200), (60,180,75),   (220,190,255), (255,127,80),   # 20-23
+        (0,200,160),   (188,143,143), (75,0,130),    (255,99,71),    # 24-27
+        (0,191,255),   (154,205,50),  (255,20,147),  (0,255,127),    # 28-31
+        (218,112,214), (127,255,0),   (255,160,122), (72,61,139),    # 32-35
+        (32,178,170),  (255,69,0),    (148,103,189), (44,160,44),    # 36-39
+        (214,39,40),   (255,187,120), (152,223,138), (174,199,232),  # 40-43
+        (197,176,213), (196,156,148), (247,182,210), (199,199,199),  # 44-47
     ]
 
-    def __init__(self, existing_registry=None):
-        self.FREE_SPACE = 0
-        self.WALL = 1
-        self.CAMERA = 2
-        self.DOOR = 3
+    FREE_SPACE, WALL, CAMERA, DOOR = 0, 1, 2, 3
 
+    def __init__(self, existing_registry=None):
+        self.overlap_parents = {}
         if existing_registry:
             self.tile_registry = existing_registry.copy()
             self.next_tile_id = max(existing_registry.values()) + 1
         else:
-            self.tile_registry = {
-                'free_space': self.FREE_SPACE,
-                'wall': self.WALL,
-                'camera': self.CAMERA,
-                'door': self.DOOR
-            }
+            self.tile_registry = {'free_space': 0, 'wall': 1, 'camera': 2, 'door': 3}
             self.next_tile_id = 4
-
         self.id_to_name = {v: k for k, v in self.tile_registry.items()}
 
-    # --- colour helpers ------------------------------------------------
-
-    def get_color(self, tile_id: int) -> Tuple[int, int, int]:
-        """Return RGB tuple for *tile_id*.  Beyond the palette → random."""
-        if tile_id < len(self.PALETTE):
-            return self.PALETTE[tile_id]
-        # Deterministic but well-spread random colour for overflow IDs
-        import hashlib
-        h = hashlib.md5(str(tile_id).encode()).digest()
+    def get_color(self, tid: int) -> Tuple[int, int, int]:
+        if tid < len(self.PALETTE):
+            return self.PALETTE[tid]
+        h = hashlib.md5(str(tid).encode()).digest()
         return (h[0], h[1], h[2])
 
-    def get_all_colors(self) -> Dict[int, Tuple[int, int, int]]:
-        """Map every registered tile ID → RGB tuple."""
-        return {tid: self.get_color(tid)
-                for tid in self.tile_registry.values()}
+    def get_all_colors(self) -> Dict:
+        return {tid: self.get_color(tid) for tid in self.tile_registry.values()}
 
     def get_color_registry_hex(self) -> Dict[str, str]:
-        """Tile name → ``#RRGGBB`` string (for JSON export)."""
-        out = {}
-        for name, tid in self.tile_registry.items():
-            r, g, b = self.get_color(tid)
-            out[name] = f"#{r:02x}{g:02x}{b:02x}"
-        return out
+        return {n: "#{:02x}{:02x}{:02x}".format(*self.get_color(t))
+                for n, t in self.tile_registry.items()}
 
-    # --- tile registration ---------------------------------------------
-
-    def get_tile_type(self, object_class: str) -> int:
-        obj_key = object_class.lower().strip()
-        if obj_key not in self.tile_registry:
-            self.tile_registry[obj_key] = self.next_tile_id
-            self.id_to_name[self.next_tile_id] = obj_key
+    def get_tile_type(self, obj_class: str) -> int:
+        key = obj_class.lower().strip()
+        if key not in self.tile_registry:
+            self.tile_registry[key] = self.next_tile_id
+            self.id_to_name[self.next_tile_id] = key
             self.next_tile_id += 1
-        return self.tile_registry[obj_key]
+        return self.tile_registry[key]
 
-    def get_overlap_tile_type(self, existing_tile_id: int, new_object_class: str) -> int:
-        existing_name = self.id_to_name.get(existing_tile_id, "unknown")
-        new_name = new_object_class.lower().strip()
-
-        if existing_tile_id in [self.FREE_SPACE, self.WALL, self.CAMERA, self.DOOR]:
-            return self.get_tile_type(new_object_class)
-        if existing_name == new_name:
-            return existing_tile_id
-        if " and " in existing_name:
-            return existing_tile_id
-
+    def get_overlap_tile_type(self, existing_id: int, new_class: str) -> int:
+        existing_name = self.id_to_name.get(existing_id, "unknown")
+        new_name = new_class.lower().strip()
+        if existing_id in (0, 1, 2, 3):
+            return self.get_tile_type(new_class)
+        if existing_name == new_name or " and " in existing_name:
+            return existing_id
         names = sorted([existing_name, new_name])
-        return self.get_tile_type(f"{names[0]} and {names[1]}")
+        new_id = self.get_tile_type(f"{names[0]} and {names[1]}")
+        if new_id not in self.overlap_parents:
+            self.overlap_parents[new_id] = (
+                self.tile_registry.get(names[0], existing_id),
+                self.tile_registry.get(names[1], 0))
+        return new_id
 
     def get_all_tiles(self) -> Dict:
         return self.tile_registry.copy()
 
 
-# ======================================================================
-# Wall geometry extraction  (camera-frame measurements)
-# ======================================================================
+# ── Room Geometry ────────────────────────────────────────────────────
 
-def extract_room_geometry(scan_data: Dict,
-                          square_room: bool = True) -> Optional[Dict]:
-    """
-    Extract room measurements from a Depth Anything scan with ``wall`` data.
-
-    Args:
-        scan_data:   Full JSON scan dict.
-        square_room: If True (default), average the left/middle/right wall
-                     depths and use that value for **both** depth and width
-                     (square room).  If False, use pinhole projection for
-                     wall width (legacy behaviour).
-
-    Returns camera-frame measurements (orientation-agnostic)::
-
-        {
-            "wall_depth_m":     float,  # distance to opposite wall
-            "wall_width_m":     float,  # lateral span (= depth when square)
-            "camera_lateral_m": float,  # camera offset from left edge
-        }
-
-    or ``None`` if the scan has no usable wall data.
-    """
-    da = scan_data.get("DEPTH_ANYTHING")
-    if da is None or "wall" not in da or "camera" not in da:
+def extract_room_geometry(scan_data: Dict) -> Optional[Dict]:
+    """Extract room dimensions: depth from avg(max_depth_col_m), width from camera FOV."""
+    cam = scan_data.get("camera")
+    objects = scan_data.get("objects", [])
+    if not cam or not objects:
         return None
 
-    wall = da["wall"]
-    cam = da["camera"]
+    wall_depths = [obj.get("max_depth_col_m", obj.get("depth_m", 2.0))
+                   for obj in objects if obj.get("max_depth_col_m", 0) > 0.1]
+    wall_depth = sum(wall_depths) / len(wall_depths) if wall_depths else 2.0
+    fx = cam.get("fx", 500)
+    img_w = cam.get("width", 640)
+    wall_width = (img_w / fx) * wall_depth
+    camera_lateral = (cam.get("cx", img_w / 2) / fx) * wall_depth
 
-    for key in ("left", "right"):
-        if key not in wall:
-            return None
+    return {"wall_depth_m": round(wall_depth, 4),
+            "wall_width_m": round(wall_width, 4),
+            "camera_lateral_m": round(camera_lateral, 4)}
 
-    # Average depth of all available samples
-    depths = []
-    for key in ("left", "middle", "right"):
-        entry = wall.get(key)
-        if entry and "depth_m" in entry:
-            depths.append(entry["depth_m"])
-    wall_depth = sum(depths) / len(depths)
-
-    if square_room:
-        # Square room: side = avg depth, camera centred
-        wall_width = wall_depth
-        camera_lateral = wall_width / 2
-    else:
-        # Legacy: project outer bbox edges via pinhole model
-        fx = cam.get("fx", 500)
-        cx = cam.get("cx", cam.get("width", 640) / 2)
-
-        left_pixel = wall["left"]["bbox"][0]
-        right_pixel = wall["right"]["bbox"][2]
-
-        x_left_m = ((left_pixel - cx) / fx) * wall_depth
-        x_right_m = ((right_pixel - cx) / fx) * wall_depth
-
-        wall_width = x_right_m - x_left_m
-        camera_lateral = -x_left_m
-
-    return {
-        "wall_depth_m": round(wall_depth, 4),
-        "wall_width_m": round(wall_width, 4),
-        "camera_lateral_m": round(camera_lateral, 4),
-    }
-
-
-# ======================================================================
-# Wall → room coordinate mapping
-# ======================================================================
 
 def compute_room_config(wall_geometry: Optional[Dict],
                         camera_wall: str = "north",
-                        camera_position_along_wall: Optional[float] = None
-                        ) -> Dict:
-    """
-    Convert camera-frame wall measurements to a full room configuration.
-
-    Args:
-        wall_geometry: Output of ``extract_room_geometry``, or None.
-        camera_wall:   ``"north"`` / ``"south"`` / ``"east"`` / ``"west"``
-        camera_position_along_wall:
-            Position in metres along the wall (room coords):
-              - North / South → distance from **west** wall   (room X)
-              - East  / West  → distance from **north** wall  (room Y)
-            ``None`` → **middle of the wall**.
-
-    Returns:
-        dict with ``room_width_m``, ``room_height_m``,
-        ``camera_x_m``, ``camera_y_m``, ``yaw``.
-
-    Yaw conventions:
-
-        Wall    yaw       Camera looks → room
-        ─────   ────────  ─────────────────────
-        north    0        +Y  (south)
-        south    π        −Y  (north)
-        east    −π/2      −X  (west)
-        west    +π/2      +X  (east)
-    """
+                        camera_position_along_wall: Optional[float] = None) -> Dict:
+    """Convert wall measurements → room dimensions + camera pose.
+    Yaw: north=0, south=π, east=−π/2, west=+π/2."""
     camera_wall = camera_wall.lower().strip()
+    fwd = wall_geometry["wall_depth_m"] if wall_geometry else 2.0
+    lat = wall_geometry["wall_width_m"] if wall_geometry else 2.5
 
-    if wall_geometry is not None:
-        fwd = wall_geometry["wall_depth_m"]
-        lat = wall_geometry["wall_width_m"]
-    else:
-        fwd = 2.0
-        lat = 2.5
-
-    # Room dimensions depend on which wall the camera is on
     if camera_wall in ("north", "south"):
         room_w, room_h = lat, fwd
     elif camera_wall in ("east", "west"):
@@ -271,7 +129,6 @@ def compute_room_config(wall_geometry: Optional[Dict],
     else:
         raise ValueError(f"camera_wall must be north/south/east/west, got '{camera_wall}'")
 
-    # Position along the wall: default = middle
     if camera_position_along_wall is not None:
         pos = camera_position_along_wall
     elif camera_wall in ("north", "south"):
@@ -279,492 +136,286 @@ def compute_room_config(wall_geometry: Optional[Dict],
     else:
         pos = room_h / 2
 
-    # Camera position and yaw per wall
     configs = {
-        "north": (pos,    0.0,    0.0),
-        "south": (pos,    room_h, math.pi),
-        "east":  (room_w, pos,    -math.pi / 2),
-        "west":  (0.0,    pos,    math.pi / 2),
+        "north": (pos, 0.0, 0.0),           "south": (pos, room_h, math.pi),
+        "east":  (room_w, pos, -math.pi/2),  "west":  (0.0, pos, math.pi/2),
     }
     cam_x, cam_y, yaw = configs[camera_wall]
-
-    result = {
-        "room_width_m": round(room_w, 4),
-        "room_height_m": round(room_h, 4),
-        "camera_x_m": round(cam_x, 4),
-        "camera_y_m": round(cam_y, 4),
-        "yaw": yaw,
-    }
-
-    print(f"  Camera wall: {camera_wall}")
-    print(f"  Room: {result['room_width_m']:.2f} x {result['room_height_m']:.2f} m")
-    print(f"  Camera: ({result['camera_x_m']:.2f}, {result['camera_y_m']:.2f}) m, "
-          f"yaw={math.degrees(yaw):.0f}°")
-
+    result = {"room_width_m": round(room_w, 4), "room_height_m": round(room_h, 4),
+              "camera_x_m": round(cam_x, 4), "camera_y_m": round(cam_y, 4), "yaw": yaw}
+    print(f"  Camera wall: {camera_wall}  |  Room: {result['room_width_m']:.2f}x"
+          f"{result['room_height_m']:.2f}m  |  Camera: ({cam_x:.2f},{cam_y:.2f}) "
+          f"yaw={math.degrees(yaw):.0f}deg")
     return result
 
 
-# ======================================================================
-# PixelRoomMapper
-# ======================================================================
+# ── Pixel Room Mapper ────────────────────────────────────────────────
 
 class PixelRoomMapper:
-    """Room mapper with Depth Anything support and configurable camera wall."""
 
-    def __init__(self,
-                 mode: str = "standalone",
-                 room_width_m: float = 2.5,
-                 room_height_m: float = 2.5,
-                 grid_resolution: float = 0.1,
-                 existing_map_file: Optional[str] = None,
-                 existing_json_file: Optional[str] = None,
-                 room_bbox: Optional[Tuple[int, int, int, int]] = None,
-                 room_name: str = "main_room",
-                 camera_fov_h: float = 100,
-                 camera_fov_v: float = 50,
-                 camera_x_m: Optional[float] = None,
-                 camera_y_m: Optional[float] = None):
-
-        self.mode = mode
-        self.room_name = room_name
+    def __init__(self, mode="standalone", room_width_m=2.5, room_height_m=2.5,
+                 grid_resolution=0.1, res_x=None, res_y=None,
+                 existing_map_file=None, existing_json_file=None,
+                 room_bbox=None, room_name="main_room",
+                 camera_fov_h=100, camera_fov_v=50,
+                 camera_x_m=None, camera_y_m=None):
+        self.mode, self.room_name = mode, room_name
         self.camera_fov_h = math.radians(camera_fov_h)
         self.camera_fov_v = math.radians(camera_fov_v)
 
-        # Load existing JSON
+        # Load existing data
         existing_registry = None
         self.existing_rooms = {}
         if existing_json_file and os.path.exists(existing_json_file):
-            with open(existing_json_file, 'r') as f:
-                existing_data = json.load(f)
-                existing_registry = existing_data.get("tile_registry", None)
-                self.existing_rooms = existing_data.get("rooms", {})
+            with open(existing_json_file) as f:
+                d = json.load(f)
+            existing_registry = d.get("tile_registry")
+            self.existing_rooms = d.get("rooms", {})
 
         if mode == "standalone":
-            self.room_width_m = room_width_m
-            self.room_height_m = room_height_m
+            self.room_width_m, self.room_height_m = room_width_m, room_height_m
+            self.res_x = res_x if res_x is not None else grid_resolution
+            self.res_y = res_y if res_y is not None else grid_resolution
             self.grid_resolution = grid_resolution
-            self.grid_width = int(room_width_m / grid_resolution)
-            self.grid_height = int(room_height_m / grid_resolution)
+            self.grid_width = round(room_width_m / self.res_x)
+            self.grid_height = round(room_height_m / self.res_y)
             self.camera_x_m = camera_x_m if camera_x_m is not None else room_width_m / 2
             self.camera_y_m = camera_y_m if camera_y_m is not None else room_height_m / 2
             self.room_bbox = (0, 0, self.grid_width, self.grid_height)
-            self.map_width = self.grid_width
-            self.map_height = self.grid_height
-
+            self.map_width, self.map_height = self.grid_width, self.grid_height
         elif mode == "existing_map":
             if not existing_map_file or not room_bbox:
                 raise ValueError("existing_map mode requires map file and room bbox")
             self.existing_grid = np.loadtxt(existing_map_file, dtype=np.int8)
             self.room_bbox = room_bbox
             x1, y1, x2, y2 = room_bbox
-            room_width_cells = x2 - x1
-            room_height_cells = y2 - y1
-            self.room_width_m = room_width_m
-            self.room_height_m = room_height_m
-            # Separate resolution per axis for accurate mapping
-            self.res_x = self.room_width_m / room_width_cells
-            self.res_y = self.room_height_m / room_height_cells
+            self.room_width_m, self.room_height_m = room_width_m, room_height_m
+            self.res_x = room_width_m / (x2 - x1)
+            self.res_y = room_height_m / (y2 - y1)
             self.grid_resolution = (self.res_x + self.res_y) / 2
-            self.grid_width = room_width_cells
-            self.grid_height = room_height_cells
-            self.camera_x_m = camera_x_m if camera_x_m is not None else self.room_width_m / 2
-            self.camera_y_m = camera_y_m if camera_y_m is not None else self.room_height_m / 2
+            self.grid_width, self.grid_height = x2 - x1, y2 - y1
+            self.camera_x_m = camera_x_m if camera_x_m is not None else room_width_m / 2
+            self.camera_y_m = camera_y_m if camera_y_m is not None else room_height_m / 2
             self.map_height, self.map_width = self.existing_grid.shape
 
-        # For standalone, res_x == res_y == grid_resolution
-        if mode == "standalone":
-            self.res_x = self.grid_resolution
-            self.res_y = self.grid_resolution
-
-        print(f"Room: {self.room_width_m:.2f} x {self.room_height_m:.2f} m  "
-              f"({self.grid_width} x {self.grid_height} cells, "
-              f"res=({self.res_x:.4f}, {self.res_y:.4f}) m/cell)")
-        print(f"Camera: ({self.camera_x_m:.2f}, {self.camera_y_m:.2f}) m")
+        print(f"Room: {self.room_width_m:.2f}x{self.room_height_m:.2f}m  "
+              f"({self.grid_width}x{self.grid_height} cells)  "
+              f"Camera: ({self.camera_x_m:.2f},{self.camera_y_m:.2f})m")
 
         self.tiles = DynamicTileManager(existing_registry)
         self.all_objects = []
-        self.duplicate_overlap_threshold = 0.0
+        self.duplicate_overlap_threshold = 0.5  # allow same-class objects in different locations
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    # ── Helpers ──
+
+    def _clamp(self, x, y):
+        return (max(0.05, min(self.room_width_m - 0.05, x)),
+                max(0.05, min(self.room_height_m - 0.05, y)))
+
+    def meters_to_grid(self, x_m, y_m):
+        return (max(0, min(self.grid_width - 1, int(x_m / self.res_x))),
+                max(0, min(self.grid_height - 1, int(y_m / self.res_y))))
+
+    def camera_to_grid(self):
+        def snap(val, limit, res):
+            if val <= 0: return 0
+            if val >= limit: return int(limit / res) - 1
+            return max(0, min(int(limit / res) - 1, int(val / res)))
+        return snap(self.camera_x_m, self.room_width_m, self.res_x), \
+               snap(self.camera_y_m, self.room_height_m, self.res_y)
+
+    # ── Size & Position ──
+
+    def estimate_object_size(self, bbox, fw, fh, depth_m, intrinsics=None):
+        pw, ph = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if intrinsics:
+            h_m = (pw / intrinsics["fx"]) * depth_m
+            v_m = (ph / intrinsics["fy"]) * depth_m
+        else:
+            h_m = (pw / fw) * 2 * depth_m * math.tan(self.camera_fov_h / 2)
+            v_m = (ph / fh) * 2 * depth_m * math.tan(self.camera_fov_v / 2)
+        return (max(0.1, min(h_m, self.room_width_m / 3)),
+                max(0.1, min(v_m, self.room_height_m / 3)))
+
+    def calculate_position(self, bbox, yaw, fw, depth_m, intrinsics=None, max_depth_col_m=None):
+        cx_px = (bbox[0] + bbox[2]) / 2
+        # Forward depth: proportional to object's own wall distance
+        if max_depth_col_m and max_depth_col_m > 0.01:
+            ratio = depth_m / max_depth_col_m
+            fwd = ratio * (self.room_height_m if abs(math.cos(yaw)) > 0.5 else self.room_width_m)
+        else:
+            fwd = depth_m
+        if intrinsics:
+            lateral = ((cx_px - intrinsics["cx"]) / intrinsics["fx"]) * depth_m
+            ox = self.camera_x_m - lateral * math.cos(yaw) + fwd * math.sin(yaw)
+            oy = self.camera_y_m + lateral * math.sin(yaw) + fwd * math.cos(yaw)
+        else:
+            ang = yaw - ((cx_px / fw) - 0.5) * self.camera_fov_h
+            ox = self.camera_x_m + fwd * math.cos(ang)
+            oy = self.camera_y_m - fwd * math.sin(ang)
+        return self._clamp(ox, oy)
+
+    # ── Duplicate detection ──
 
     @staticmethod
-    def _is_depth_anything_format(scan_data: Dict) -> bool:
-        return "DEPTH_ANYTHING" in scan_data
-
-    @staticmethod
-    def _get_object_depth(detection: Dict) -> float:
-        return detection.get("depth_m", DEFAULT_DISTANCE_M)
-
-    # ------------------------------------------------------------------
-    # Size estimation
-    # ------------------------------------------------------------------
-
-    def estimate_object_size_from_pixels(self, bbox, frame_width, frame_height,
-                                         depth_m, object_class="",
-                                         camera_intrinsics=None):
-        """Pinhole model (with intrinsics) or FOV fallback."""
-        pixel_w = bbox[2] - bbox[0]
-        pixel_h = bbox[3] - bbox[1]
-
-        if camera_intrinsics is not None:
-            h_m = (pixel_w / camera_intrinsics["fx"]) * depth_m
-            v_m = (pixel_h / camera_intrinsics["fy"]) * depth_m
-        else:
-            h_m = (pixel_w / frame_width) * 2 * depth_m * math.tan(self.camera_fov_h / 2)
-            v_m = (pixel_h / frame_height) * 2 * depth_m * math.tan(self.camera_fov_v / 2)
-
-        h_m = max(0.1, min(h_m, self.room_width_m / 3))
-        v_m = max(0.1, min(v_m, self.room_height_m / 3))
-        return h_m, v_m
-
-    # ------------------------------------------------------------------
-    # Position estimation
-    # ------------------------------------------------------------------
-
-    def calculate_object_position(self, bbox, yaw, frame_width, depth_m,
-                                  camera_intrinsics=None):
-        """
-        Project object into room coordinates.
-
-        Top-down projection mirrors the camera X axis relative to a naive
-        2D rotation, so the lateral component is negated in the transform:
-
-            room_dx = -lateral · cos(yaw)  +  forward · sin(yaw)
-            room_dy =  lateral · sin(yaw)  +  forward · cos(yaw)
-
-        This correctly maps:
-            north (yaw=0):    right-in-image → west  (−X)
-            south (yaw=π):    right-in-image → east  (+X)
-            east  (yaw=−π/2): right-in-image → north (−Y)
-            west  (yaw=+π/2): right-in-image → south (+Y)
-        """
-        bbox_center_x = (bbox[0] + bbox[2]) / 2
-
-        if camera_intrinsics is not None:
-            cx = camera_intrinsics["cx"]
-            fx = camera_intrinsics["fx"]
-            lateral_m = ((bbox_center_x - cx) / fx) * depth_m
-            forward_m = depth_m
-        else:
-            # Legacy FOV mode (uses its own yaw convention)
-            angle_offset = -((bbox_center_x / frame_width) - 0.5) * self.camera_fov_h
-            object_angle = yaw + angle_offset
-            obj_x = self.camera_x_m + depth_m * math.cos(object_angle)
-            obj_y = self.camera_y_m - depth_m * math.sin(object_angle)
-            obj_x = max(0.05, min(self.room_width_m - 0.05, obj_x))
-            obj_y = max(0.05, min(self.room_height_m - 0.05, obj_y))
-            return obj_x, obj_y
-
-        # FIX #1: negate lateral in the rotation to account for
-        # the mirror between 3D camera view and 2D top-down map
-        obj_x = self.camera_x_m - lateral_m * math.cos(yaw) + forward_m * math.sin(yaw)
-        obj_y = self.camera_y_m + lateral_m * math.sin(yaw) + forward_m * math.cos(yaw)
-
-        obj_x = max(0.05, min(self.room_width_m - 0.05, obj_x))
-        obj_y = max(0.05, min(self.room_height_m - 0.05, obj_y))
-        return obj_x, obj_y
-
-    # ------------------------------------------------------------------
-    # Grid helpers
-    # ------------------------------------------------------------------
-
-    def meters_to_grid(self, x_m: float, y_m: float) -> Tuple[int, int]:
-        """Convert metres to grid coordinates using per-axis resolution."""
-        gx = int(x_m / self.res_x)
-        gy = int(y_m / self.res_y)
-        gx = max(0, min(self.grid_width - 1, gx))
-        gy = max(0, min(self.grid_height - 1, gy))
-        return gx, gy
-
-    def camera_to_grid(self) -> Tuple[int, int]:
-        """
-        Convert camera metres to grid cell, snapping to wall boundaries.
-        FIX #3: guarantees the camera lands exactly on the wall cell.
-        """
-        # Snap X
-        if self.camera_x_m <= 0:
-            gx = 0
-        elif self.camera_x_m >= self.room_width_m:
-            gx = self.grid_width - 1
-        else:
-            gx = int(self.camera_x_m / self.res_x)
-            gx = max(0, min(self.grid_width - 1, gx))
-
-        # Snap Y
-        if self.camera_y_m <= 0:
-            gy = 0
-        elif self.camera_y_m >= self.room_height_m:
-            gy = self.grid_height - 1
-        else:
-            gy = int(self.camera_y_m / self.res_y)
-            gy = max(0, min(self.grid_height - 1, gy))
-
-        return gx, gy
-
-    def get_object_cells(self, obj):
-        x1, y1, x2, y2 = obj["bbox"]
+    def _cells(bbox):
+        x1, y1, x2, y2 = bbox if isinstance(bbox, (list, tuple)) else bbox["bbox"]
         return {(x, y) for y in range(y1, y2) for x in range(x1, x2)}
 
-    def is_duplicate_object(self, obj_class, new_cells):
-        for existing in self.all_objects:
-            if existing["type"] == obj_class:
-                existing_cells = self.get_object_cells(existing)
-                shared = new_cells & existing_cells
-                smaller = min(len(new_cells), len(existing_cells))
+    def _is_duplicate(self, obj_class, new_cells):
+        for ex in self.all_objects:
+            if ex["type"] == obj_class:
+                ec = self._cells(ex["bbox"])
+                shared = new_cells & ec
+                smaller = min(len(new_cells), len(ec))
                 if smaller > 0 and len(shared) / smaller >= self.duplicate_overlap_threshold:
                     return True
         return False
 
-    # ------------------------------------------------------------------
-    # Scan ingestion
-    # ------------------------------------------------------------------
+    # ── Scan Ingestion ──
 
     def add_scan(self, scan_data: Dict, yaw: float = 0.0):
-        """Add a scan.  ``yaw`` is the camera heading in room coordinates."""
-        camera_intrinsics = None
-
-        if self._is_depth_anything_format(scan_data):
-            da = scan_data["DEPTH_ANYTHING"]
-            cam = da["camera"]
-            camera_intrinsics = {
-                "fx": cam.get("fx", 500), "fy": cam.get("fy", 500),
-                "cx": cam.get("cx", cam.get("width", 640) / 2),
-                "cy": cam.get("cy", cam.get("height", 480) / 2),
-            }
-            # Image resolution from nanoowl
-            owl_img = scan_data.get("nanoowl", {}).get("result", {}).get("image", {})
-            frame_width = owl_img.get("width", cam.get("width", 640))
-            frame_height = owl_img.get("height", cam.get("height", 480))
-            detections = da.get("objects", [])
-
-        elif 'nanoowl' in scan_data and 'result' in scan_data['nanoowl']:
-            result = scan_data['nanoowl']['result']
-            img = result.get('image', {})
-            frame_width = img.get('width', 1280)
-            frame_height = img.get('height', 720)
-            detections = result.get('detections', [])
-
-        elif 'image' in scan_data:
-            frame_width = scan_data['image'].get('width', 1280)
-            frame_height = scan_data['image'].get('height', 720)
-            detections = scan_data.get('detections', [])
-        else:
-            frame_width, frame_height = 1280, 720
-            detections = scan_data.get('detections', [])
+        cam = scan_data.get("camera", {})
+        intrinsics = {"fx": cam.get("fx", 500), "fy": cam.get("fy", 500),
+                      "cx": cam.get("cx", cam.get("width", 640) / 2),
+                      "cy": cam.get("cy", cam.get("height", 480) / 2)}
+        fw = cam.get("width", 640)
+        fh = cam.get("height", 480)
+        detections = scan_data.get("objects", [])
 
         for det in detections:
-            label = det.get('label', '').lower()
-            obj_class = label.replace('a ', '').replace('an ', '').strip()
-            if not obj_class:
-                continue
+            obj_class = det.get('label', '').lower().replace('a ', '').replace('an ', '').strip()
+            if not obj_class: continue
 
             bbox = det['bbox']
-            depth_m = self._get_object_depth(det)
+            depth_m = det.get("depth_m", DEFAULT_DISTANCE_M)
+            max_depth = det.get("max_depth_col_m")
             tile_type = self.tiles.get_tile_type(obj_class)
+            ox, oy = self.calculate_position(bbox, yaw, fw, depth_m, intrinsics, max_depth)
+            wm, hm = self.estimate_object_size(bbox, fw, fh, depth_m, intrinsics)
 
-            obj_x, obj_y = self.calculate_object_position(
-                bbox, yaw, frame_width, depth_m, camera_intrinsics)
+            # Shift position so object stays fully inside room walls
+            margin = 0.05
+            ox = max(margin + wm / 2, min(self.room_width_m - margin - wm / 2, ox))
+            oy = max(margin + hm / 2, min(self.room_height_m - margin - hm / 2, oy))
 
-            width_m, height_m = self.estimate_object_size_from_pixels(
-                bbox, frame_width, frame_height, depth_m, obj_class, camera_intrinsics)
-
-            # Constrain size to stay inside room
-            max_w = max(0.1, min(obj_x - 0.05, self.room_width_m - obj_x - 0.05) * 2)
-            max_h = max(0.1, min(obj_y - 0.05, self.room_height_m - obj_y - 0.05) * 2)
-            width_m = min(width_m, max_w)
-            height_m = min(height_m, max_h)
-
-            # Grid coords using per-axis resolution
-            gx, gy = self.meters_to_grid(obj_x, obj_y)
-            wc = max(1, int(width_m / self.res_x))
-            hc = max(1, int(height_m / self.res_y))
-
-            # FIX #2: swap when camera faces along X axis (east/west walls)
-            # width_m  = lateral extent (camera horizontal) → along the wall
-            # height_m = vertical extent (we use as depth on floor) → into the room
-            # When yaw ≈ ±π/2 the "along wall" axis is Y in the grid, so swap.
-            if abs(math.sin(yaw)) > abs(math.cos(yaw)):
+            gx, gy = self.meters_to_grid(ox, oy)
+            wc, hc = max(1, int(wm / self.res_x)), max(1, int(hm / self.res_y))
+            if abs(math.sin(yaw)) > abs(math.cos(yaw)):  # east/west → swap axes
                 wc, hc = hc, wc
 
-            x1 = gx - wc // 2
-            y1 = gy - hc // 2
+            x1, y1 = gx - wc // 2, gy - hc // 2
             x2, y2 = x1 + wc, y1 + hc
-
             if self.mode == "existing_map":
-                x1 += self.room_bbox[0]; y1 += self.room_bbox[1]
-                x2 += self.room_bbox[0]; y2 += self.room_bbox[1]
+                bx, by = self.room_bbox[0], self.room_bbox[1]
+                x1 += bx; y1 += by; x2 += bx; y2 += by
 
-            new_cells = self.get_object_cells({"bbox": [x1, y1, x2, y2]})
-            if self.is_duplicate_object(obj_class, new_cells):
-                print(f"  Skipping duplicate: {obj_class}")
-                continue
+            cells = self._cells([x1, y1, x2, y2])
+            if self._is_duplicate(obj_class, cells):
+                print(f"  Skip duplicate: {obj_class}"); continue
 
             self.all_objects.append({
                 "type": obj_class, "tile_type": tile_type,
                 "bbox": [x1, y1, x2, y2], "depth_m": depth_m,
-                "position_m": [round(obj_x, 3), round(obj_y, 3)],
-                "size_m": [round(width_m, 3), round(height_m, 3)],
-            })
-            print(f"  Added: {obj_class} at ({obj_x:.2f}, {obj_y:.2f}) m, "
-                  f"depth={depth_m:.2f} m, size=({width_m:.2f} x {height_m:.2f}) m")
+                "position_m": [round(ox, 3), round(oy, 3)],
+                "size_m": [round(wm, 3), round(hm, 3)]})
+            print(f"  Added: {obj_class} ({ox:.2f},{oy:.2f})m depth={depth_m:.2f}m "
+                  f"size=({wm:.2f}x{hm:.2f})m")
 
-    # ------------------------------------------------------------------
-    # Grid creation
-    # ------------------------------------------------------------------
+    # ── Grid Creation ──
 
     def create_grid_map(self) -> np.ndarray:
+        T = self.tiles
         if self.mode == "standalone":
-            grid = np.full((self.grid_height, self.grid_width),
-                           self.tiles.FREE_SPACE, dtype=np.int8)
-            for x in range(self.grid_width):
-                grid[0, x] = grid[self.grid_height - 1, x] = self.tiles.WALL
-            for y in range(self.grid_height):
-                grid[y, 0] = grid[y, self.grid_width - 1] = self.tiles.WALL
+            grid = np.full((self.grid_height, self.grid_width), T.FREE_SPACE, dtype=np.int8)
+            grid[0, :] = grid[-1, :] = T.WALL
+            grid[:, 0] = grid[:, -1] = T.WALL
         else:
             grid = self.existing_grid.copy()
             bx1, by1, bx2, by2 = self.room_bbox
             for y in range(by1 + 1, by2 - 1):
                 for x in range(bx1 + 1, bx2 - 1):
                     if y < self.map_height and x < self.map_width:
-                        grid[y, x] = self.tiles.FREE_SPACE
+                        grid[y, x] = T.FREE_SPACE
 
-        # FIX #3: use camera_to_grid for wall snapping
         cx, cy = self.camera_to_grid()
         if self.mode == "existing_map":
-            cx += self.room_bbox[0]
-            cy += self.room_bbox[1]
+            cx += self.room_bbox[0]; cy += self.room_bbox[1]
         if 0 <= cx < self.map_width and 0 <= cy < self.map_height:
-            grid[cy, cx] = self.tiles.CAMERA
+            grid[cy, cx] = T.CAMERA
 
-        # Objects
         for obj in self.all_objects:
             x1, y1, x2, y2 = obj["bbox"]
-            obj_class = obj["type"]
+            oc = obj["type"]
             for y in range(y1, y2):
                 for x in range(x1, x2):
                     if 0 < x < self.map_width - 1 and 0 < y < self.map_height - 1:
                         t = grid[y, x]
-                        if t in (self.tiles.WALL, self.tiles.CAMERA, self.tiles.DOOR):
-                            continue
-                        if t != self.tiles.FREE_SPACE:
-                            grid[y, x] = self.tiles.get_overlap_tile_type(t, obj_class)
-                        else:
-                            grid[y, x] = self.tiles.get_tile_type(obj_class)
+                        if t in (T.WALL, T.CAMERA, T.DOOR): continue
+                        grid[y, x] = T.get_overlap_tile_type(t, oc) if t != T.FREE_SPACE \
+                                     else T.get_tile_type(oc)
         return grid
 
-    # ------------------------------------------------------------------
-    # Save
-    # ------------------------------------------------------------------
+    # ── Save ──
 
     def save(self, json_file="data/unified_rooms.json",
-             map_file="data/house_map.txt",
-             image_file="data/house_map.png"):
+             map_file="data/house_map.txt", image_file="data/house_map.png"):
         grid = self.create_grid_map()
-
         cx, cy = self.camera_to_grid()
         if self.mode == "existing_map":
-            cx += self.room_bbox[0]
-            cy += self.room_bbox[1]
+            cx += self.room_bbox[0]; cy += self.room_bbox[1]
 
         rooms = self.existing_rooms.copy()
         rooms[self.room_name] = {
             "name": self.room_name,
             "camera_position": [cx, cy],
-            "camera_position_m": [round(self.camera_x_m, 3),
-                                  round(self.camera_y_m, 3)],
-            "room_dimensions_m": [round(self.room_width_m, 3),
-                                  round(self.room_height_m, 3)],
-            "bbox": list(self.room_bbox),
-            "objects": self.all_objects,
-            "doors": [25, 7],
-        }
+            "camera_position_m": [round(self.camera_x_m, 3), round(self.camera_y_m, 3)],
+            "room_dimensions_m": [round(self.room_width_m, 3), round(self.room_height_m, 3)],
+            "bbox": list(self.room_bbox), "objects": self.all_objects, "doors": [25, 7]}
 
         output = {
-            "house_dimensions_m": {
-                "width": self.map_width * self.grid_resolution,
-                "height": self.map_height * self.grid_resolution,
-            },
-            "grid_resolution": self.grid_resolution,
-            "rooms": rooms,
+            "house_dimensions_m": {"width": self.map_width * self.grid_resolution,
+                                   "height": self.map_height * self.grid_resolution},
+            "grid_resolution": self.grid_resolution, "rooms": rooms,
             "tile_registry": self.tiles.get_all_tiles(),
-            "tile_colors": self.tiles.get_color_registry_hex(),
-        }
+            "tile_colors": self.tiles.get_color_registry_hex()}
 
         with open(json_file, 'w') as f:
             json.dump(output, f, indent=2)
         np.savetxt(map_file, grid, fmt='%d')
-
-        # Render colour image
         if image_file:
             self.save_image(grid, image_file)
+        print(f"\nSaved {len(self.all_objects)} objects -> '{self.room_name}'  "
+              f"({len(rooms)} rooms, {len(self.tiles.tile_registry)} tile types)")
 
-        print(f"\nSaved {len(self.all_objects)} objects to room '{self.room_name}'")
-        print(f"Total rooms: {len(rooms)}")
-        print(f"Tile types: {len(self.tiles.tile_registry)} total")
-
-    # ------------------------------------------------------------------
-    # Image rendering
-    # ------------------------------------------------------------------
-
-    def save_image(self, grid: np.ndarray, filename: str = "data/house_map.png",
-                   cell_px: int = 16, legend: bool = True):
-        """
-        Render the grid to a PNG with the palette colours and a legend.
-
-        Args:
-            grid:     2D int array (from ``create_grid_map``).
-            filename: Output path.
-            cell_px:  Pixels per grid cell.
-            legend:   If True, draw a colour legend to the right.
-        """
+    def save_image(self, grid, filename="data/house_map.png", cell_px=16, legend=True):
+        """Render grid to PNG with colour legend."""
         from PIL import Image, ImageDraw, ImageFont
-
         h, w = grid.shape
-        map_w = w * cell_px
-        map_h = h * cell_px
-
-        # --- legend layout ---
-        used_ids = sorted(set(grid.flat))
-        legend_w = 0
+        used = sorted(set(grid.flat))
         entry_h = max(cell_px, 18)
-        if legend:
-            # Measure text widths to size the panel
-            max_label = max(
-                (len(self.tiles.id_to_name.get(tid, f"id_{tid}")) for tid in used_ids),
-                default=6)
-            legend_w = entry_h + 8 + max_label * 9 + 20   # swatch + gap + text + pad
+        legend_w = (entry_h + 8 + max((len(self.tiles.id_to_name.get(t, f"id_{t}"))
+                    for t in used), default=6) * 9 + 20) if legend else 0
 
-        img = Image.new("RGB", (map_w + legend_w, max(map_h, len(used_ids) * entry_h + 20)),
-                         (255, 255, 255))
+        img = Image.new("RGB", (w * cell_px + legend_w,
+                         max(h * cell_px, len(used) * entry_h + 20)), (255, 255, 255))
         draw = ImageDraw.Draw(img)
 
-        # --- draw grid ---
         for y in range(h):
             for x in range(w):
-                tid = int(grid[y, x])
-                colour = self.tiles.get_color(tid)
+                c = self.tiles.get_color(int(grid[y, x]))
                 x0, y0 = x * cell_px, y * cell_px
-                draw.rectangle([x0, y0, x0 + cell_px - 1, y0 + cell_px - 1],
-                               fill=colour)
+                draw.rectangle([x0, y0, x0 + cell_px - 1, y0 + cell_px - 1], fill=c)
 
-        # --- draw legend ---
         if legend:
-            lx = map_w + 10
-            ly = 10
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
-            except Exception:
-                font = ImageFont.load_default()
-
-            for tid in used_ids:
-                colour = self.tiles.get_color(tid)
+            try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
+            except Exception: font = ImageFont.load_default()
+            lx, ly = w * cell_px + 10, 10
+            for tid in used:
+                c = self.tiles.get_color(tid)
                 name = self.tiles.id_to_name.get(tid, f"id_{tid}")
-                # colour swatch
-                draw.rectangle([lx, ly, lx + entry_h - 2, ly + entry_h - 2], fill=colour,
-                               outline=(0, 0, 0))
-                # label
+                draw.rectangle([lx, ly, lx + entry_h - 2, ly + entry_h - 2],
+                               fill=c, outline=(0, 0, 0))
                 draw.text((lx + entry_h + 4, ly + 1), name, fill=(0, 0, 0), font=font)
                 ly += entry_h
 
@@ -773,236 +424,164 @@ class PixelRoomMapper:
         print(f"  Image saved: {filename}")
 
 
-# ======================================================================
-# File processing
-# ======================================================================
-
-def get_yaw_from_json(scan_data: Dict) -> Optional[float]:
-    """Extract yaw from legacy pose field.  Returns None if absent."""
-    if 'pose' in scan_data and 'yaw' in scan_data['pose']:
-        yaw = scan_data['pose']['yaw']
-        print(f"  Found yaw in JSON: {yaw:.4f} rad ({math.degrees(yaw):.1f}°)")
-        return yaw
-    return None
-
+# ── File Processing ──────────────────────────────────────────────────
 
 def process_files(mode="standalone", existing_map=None, existing_json=None,
-                  room_bbox=None, room_name="main_room",
-                  camera_wall="north",
-                  camera_position_along_wall=None,
-                  grid_resolution=None,
+                  room_bbox=None, room_name="main_room", camera_wall="north",
+                  camera_position_along_wall=None, grid_resolution=None,
                   grid_cells=51,
-                  square_room=True,
-                  room_width_m=None,
-                  room_height_m=None):
-    """
-    Process all detection files.
-
-    Args:
-        grid_resolution: Metres per cell.  If ``None`` (default), computed
-                         automatically from ``grid_cells``.
-        grid_cells:      Number of cells per room side (default 51).
-                         Ignored when ``grid_resolution`` is given explicitly.
-        square_room:     If True (default), room is square — side length =
-                         average wall depth.
-        room_width_m:    Override room width  (metres).  ``None`` = auto.
-        room_height_m:   Override room height (metres).  ``None`` = auto.
-
-    1. Pre-scan for first JSON with ``wall`` data → auto room dimensions.
-    2. ``compute_room_config`` maps wall + camera_wall → room coords + yaw.
-    3. Each file is processed with the configured yaw (Depth Anything) or
-       per-file pose yaw (legacy).
-    """
+                  room_width_m=None, room_height_m=None):
     bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
     json_files = glob.glob(os.path.join(bbox_dir, "*.json"))
-
     if not json_files:
-        print(f"No JSON files found in {bbox_dir}")
-        return 0
+        print(f"No JSON files in {bbox_dir}"); return 0
+    print(f"Found {len(json_files)} JSON files")
 
-    print(f"Found {len(json_files)} JSON files to process")
-
-    # ------------------------------------------------------------------
     # 1. Pre-scan for wall data
-    # ------------------------------------------------------------------
     wall_geometry = None
     for jf in sorted(json_files):
         try:
-            with open(jf, 'r') as f:
-                data = json.load(f)
-            geom = extract_room_geometry(data, square_room=square_room)
-            if geom is not None:
+            with open(jf) as f: data = json.load(f)
+            geom = extract_room_geometry(data)
+            if geom:
                 wall_geometry = geom
-                print(f"  Wall data from {os.path.basename(jf)}:")
-                print(f"    depth={geom['wall_depth_m']:.2f} m, "
-                      f"width={geom['wall_width_m']:.2f} m, "
-                      f"lateral={geom['camera_lateral_m']:.2f} m")
-                break
-        except Exception:
-            continue
+                print(f"  Wall data: depth={geom['wall_depth_m']:.2f}m "
+                      f"width={geom['wall_width_m']:.2f}m"); break
+        except Exception: continue
 
-    # ------------------------------------------------------------------
-    # 2. Compute room config (works with or without wall data)
-    # ------------------------------------------------------------------
-    config = compute_room_config(wall_geometry, camera_wall,
-                                 camera_position_along_wall)
-    config_yaw = config["yaw"]
+    # 2. Compute initial room config from wall geometry
+    config = compute_room_config(wall_geometry, camera_wall, camera_position_along_wall)
+    if room_width_m is not None:  config["room_width_m"] = room_width_m
+    if room_height_m is not None: config["room_height_m"] = room_height_m
 
-    # Allow explicit overrides of room dimensions
-    if room_width_m is not None:
-        config["room_width_m"] = room_width_m
-    if room_height_m is not None:
-        config["room_height_m"] = room_height_m
-
-    # Derive grid_resolution from grid_cells if not given explicitly
+    # 3. Derive per-axis resolution from grid_cells
+    #    grid_cells: int → same both axes, tuple → (along_wall, into_room)
+    #    north/south: along_wall = width(X),  into_room = height(Y)
+    #    east/west:   along_wall = height(Y),  into_room = width(X)
+    #
+    #    Resolution maps wall_depth → last INTERIOR cell (not wall cell).
+    #    Grid row 0 = camera wall, row N-1 = far wall → interior = 1..(N-2).
+    #    res = wall_size / (cells - 2).  Room extends slightly past wall
+    #    for the boundary cells.
     if grid_resolution is None:
-        room_side = max(config["room_width_m"], config["room_height_m"])
-        grid_resolution = room_side / grid_cells
-        print(f"  Grid: {grid_cells}×{grid_cells} cells, "
-              f"resolution={grid_resolution:.4f} m/cell")
+        if isinstance(grid_cells, (list, tuple)):
+            lat_cells, depth_cells = grid_cells
+        else:
+            lat_cells = depth_cells = grid_cells
 
-    # ------------------------------------------------------------------
-    # 3. Create mapper
-    # ------------------------------------------------------------------
-    if mode == "standalone":
-        mapper = PixelRoomMapper(
-            mode="standalone",
-            room_width_m=config["room_width_m"],
-            room_height_m=config["room_height_m"],
-            grid_resolution=grid_resolution,
-            existing_json_file=existing_json,
-            room_name=room_name,
-            camera_fov_h=100, camera_fov_v=50,
-            camera_x_m=config["camera_x_m"],
-            camera_y_m=config["camera_y_m"],
-        )
+        if camera_wall in ("north", "south"):
+            cw, ch = lat_cells, depth_cells
+        else:
+            cw, ch = depth_cells, lat_cells
+
+        wall_w = config["room_width_m"]
+        wall_h = config["room_height_m"]
+        res_x = wall_w / max(1, cw - 2)
+        res_y = wall_h / max(1, ch - 2)
+        # Inflate room to include wall boundary cells
+        config["room_width_m"]  = res_x * cw
+        config["room_height_m"] = res_y * ch
+        grid_resolution = (res_x + res_y) / 2
+        print(f"  Grid: {cw}x{ch} cells (along={lat_cells}, depth={depth_cells}), "
+              f"res=({res_x:.4f}, {res_y:.4f}) m/cell, "
+              f"room={config['room_width_m']:.3f}x{config['room_height_m']:.3f}m")
     else:
-        mapper = PixelRoomMapper(
-            mode="existing_map",
-            room_width_m=config["room_width_m"],
-            room_height_m=config["room_height_m"],
-            existing_map_file=existing_map,
-            existing_json_file=existing_json,
-            room_bbox=room_bbox,
-            room_name=room_name,
-            camera_fov_h=100, camera_fov_v=60,
-            camera_x_m=config["camera_x_m"],
-            camera_y_m=config["camera_y_m"],
-        )
+        res_x = res_y = grid_resolution
 
-    # ------------------------------------------------------------------
-    # 4. Process each file
-    # ------------------------------------------------------------------
-    for json_file in sorted(json_files):
+    # Recompute camera for final room dimensions
+    config = compute_room_config(
+        {"wall_depth_m": config["room_height_m"] if camera_wall in ("north","south")
+                         else config["room_width_m"],
+         "wall_width_m": config["room_width_m"] if camera_wall in ("north","south")
+                         else config["room_height_m"],
+         "camera_lateral_m": 0},
+        camera_wall, camera_position_along_wall)
+
+    # 4. Create mapper
+    mapper = PixelRoomMapper(
+        mode=mode, room_width_m=config["room_width_m"],
+        room_height_m=config["room_height_m"], grid_resolution=grid_resolution,
+        res_x=res_x, res_y=res_y,
+        existing_map_file=existing_map, existing_json_file=existing_json,
+        room_bbox=room_bbox, room_name=room_name,
+        camera_fov_h=100, camera_fov_v=50 if mode == "standalone" else 60,
+        camera_x_m=config["camera_x_m"], camera_y_m=config["camera_y_m"])
+
+    # 5. Process each file
+    config_yaw = config["yaw"]
+    for jf in sorted(json_files):
         try:
-            print(f"Processing: {os.path.basename(json_file)}")
-            with open(json_file, 'r') as f:
-                scan_data = json.load(f)
-
-            # Depth Anything → use config yaw;  legacy → use pose yaw
-            pose_yaw = get_yaw_from_json(scan_data)
-            yaw = pose_yaw if pose_yaw is not None else config_yaw
-
-            mapper.add_scan(scan_data, yaw)
+            print(f"Processing: {os.path.basename(jf)}")
+            with open(jf) as f: sd = json.load(f)
+            pose = sd.get('pose', {})
+            yaw = pose['yaw'] if 'yaw' in pose else config_yaw
+            mapper.add_scan(sd, yaw)
         except Exception as e:
-            print(f"Error processing {json_file}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+            print(f"Error: {jf}: {e}"); import traceback; traceback.print_exc()
 
     mapper.save()
     return len(json_files)
 
 
-# ======================================================================
-# Main
-# ======================================================================
+# ── Main ─────────────────────────────────────────────────────────────
 
 def main():
-    """Monitor and process detection files."""
+    # ╔═══════════════════════════════════════════════════════╗
+    # ║  CONFIGURATION — edit these values for your setup    ║
+    # ╚═══════════════════════════════════════════════════════╝
 
-    # ╔══════════════════════════════════════════════════════════════════╗
-    # ║  CONFIGURATION — edit these values for your setup              ║
-    # ╚══════════════════════════════════════════════════════════════════╝
+    mode          = "standalone"   # "standalone" or "existing_map"
+    existing_map  = None           # path to existing map .txt
+    existing_json = None           # path to existing .json
+    room_bbox     = None           # e.g. (23, 10, 40, 24)
+    room_name     = "main_room"
 
-    # ---- Mode ----
-    #   "standalone"   = one large room (default)
-    #   "existing_map" = overlay onto an existing house map
-    mode = "standalone"
-    existing_map = None      # e.g. os.path.join(BASE_PATH, "room_mapping/office_map.txt")
-    existing_json = None     # e.g. os.path.join(BASE_PATH, "room_mapping/office.json")
-    room_bbox = None         # e.g. (23, 10, 40, 24)
-    room_name = "main_room"
+    #         ┌── north ──┐
+    #       west        east
+    #         └── south ──┘
+    camera_wall = "south"          # "north" / "south" / "east" / "west"
+    camera_position_along_wall = None  # metres along wall, None = middle
 
-    # ---- Camera wall ----
-    #
-    #         ┌──── north ────┐
-    #         │               │
-    #       west            east
-    #         │               │
-    #         └──── south ────┘
-    #
-    camera_wall = "north"    # "north" / "south" / "east" / "west"
+    grid_cells     = (51,51)            # int or (along_wall, into_room) tuple
+    grid_resolution = None         # m/cell, None = auto from grid_cells
+    room_width_m   = None          # override width  (m), None = auto
+    room_height_m  = None          # override height (m), None = auto
 
-    # ---- Position along the wall (metres) ----
-    #   North/South → distance from WEST wall  (room X)
-    #   East/West   → distance from NORTH wall (room Y)
-    #
-    #   None = middle of the wall (default)
-    camera_position_along_wall = None
+    # ════════════════════════════════════════════════════════
 
-    # ---- Grid ----
-    grid_cells = 51          # cells per room side (default 51×51)
-    grid_resolution = None   # m/cell — None = auto from grid_cells
-
-    # ---- Room shape ----
-    square_room = True       # True = square room (side = avg wall depth)
-    room_width_m = None      # override room width  (metres), None = auto
-    room_height_m = None     # override room height (metres), None = auto
-
-    # ================================================================
-
-    if room_bbox is not None and existing_map is not None:
+    if room_bbox and existing_map:
         mode = "existing_map"
-        print(f"Mode: Existing Map  |  Room: {room_name}  |  bbox: {room_bbox}")
+        print(f"Mode: Existing Map | Room: {room_name} | bbox: {room_bbox}")
     else:
-        shape = "square" if square_room else "rectangular"
-        print(f"Mode: Standalone ({shape})  |  Room: {room_name}  |  "
-              f"Grid: {grid_cells}×{grid_cells}")
+        gc = f"along={grid_cells[0]} depth={grid_cells[1]}" if isinstance(grid_cells, (list, tuple)) \
+             else f"{grid_cells}x{grid_cells}"
+        print(f"Mode: Standalone | "
+              f"Room: {room_name} | Grid: {gc}")
 
-    print(f"Camera wall: {camera_wall}  |  "
-          f"Position along wall: {camera_position_along_wall or 'middle'}")
-    if grid_resolution is not None:
-        print(f"Grid resolution: {grid_resolution} m/cell")
-    print("\nMonitoring for detection files…  (Ctrl+C to stop)\n")
+    print(f"Camera: {camera_wall} wall, pos={camera_position_along_wall or 'middle'}")
+    print("Monitoring for detection files...  (Ctrl+C to stop)\n")
 
     bbox_dir = os.path.join(BASE_PATH, "room_mapping/ingest_out")
-    last_file_count = 0
-
+    last_count = 0
     try:
         while True:
             files = glob.glob(os.path.join(bbox_dir, "*.json"))
-            if len(files) != last_file_count:
+            if len(files) != last_count:
                 if files:
-                    print(f"\n[{time.strftime('%H:%M:%S')}] {len(files)} file(s) found")
+                    print(f"\n[{time.strftime('%H:%M:%S')}] {len(files)} file(s)")
                     n = process_files(
                         mode, existing_map, existing_json, room_bbox, room_name,
                         camera_wall=camera_wall,
                         camera_position_along_wall=camera_position_along_wall,
-                        grid_resolution=grid_resolution,
-                        grid_cells=grid_cells,
-                        square_room=square_room,
-                        room_width_m=room_width_m,
-                        room_height_m=room_height_m,
-                    )
-                    if n > 0:
-                        print(f"Processed {n} files → unified_rooms.json + house_map.txt")
+                        grid_resolution=grid_resolution, grid_cells=grid_cells,
+                        room_width_m=room_width_m, room_height_m=room_height_m)
+                    if n: print(f"Processed {n} files -> unified_rooms.json + house_map.txt")
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
-                last_file_count = len(files)
+                last_count = len(files)
             time.sleep(2)
     except KeyboardInterrupt:
-        print("\n\nStopped by user.")
+        print("\n\nStopped.")
 
 
 if __name__ == "__main__":
