@@ -158,7 +158,7 @@ ollama run llama3.2:3b
 
 Terminal 2 – Launch Room Mapping
 ```bash
-cd ~/GIT/TheAgency/src/room_mapping
+cd ~/GIT/NanoLLM_VILA_and_OWL/room_mapping
 source .venv/bin/activate
 pip3 install requirements.txt
 python3 run_llm_with_web.py
