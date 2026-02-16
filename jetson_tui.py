@@ -76,7 +76,10 @@ def main():
         choice = input("Select an option: ").strip().lower()
 
         comm_cmd = (
-            f"python3 comm_manager_vllm_batch.py   --profile robotican   --vllm-model cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://192.168.131.22:8080   --overlap 0.3   --force"
+            f"python3 comm_manager_vllm.py --profile robotican "
+            f"--vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 "
+            f"--captures-root {CAPTURES_ROOT} --endpoint http://192.168.131.22:8080 "
+            f"--host 192.168.131.22 --force --depth-endpoint http://192.168.131.22:5070/bbox_depth"
         )
 
         if choice == '1':
