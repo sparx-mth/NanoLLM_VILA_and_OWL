@@ -30,7 +30,7 @@ def ingest():
         except Exception:
             stem = f"frame_{int(time.time())}"
 
-        # 3) In single-image mode, clear old files before saving new one
+        # 3) In single-image mode, clear old files then wait so watcher sees the change
         if not cfg.accumulate_mode:
             for old_file in os.listdir(OUT_DIR):
                 old_path = os.path.join(OUT_DIR, old_file)
@@ -38,6 +38,7 @@ def ingest():
                     os.remove(old_path)
                 except Exception:
                     pass
+            time.sleep(1)
 
         # 4) Save meta JSON (pretty)
         json_name = secure_filename(f"{stem}_dets.json")

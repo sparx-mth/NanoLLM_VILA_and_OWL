@@ -97,19 +97,36 @@ class DynamicTileManager:
 # ── Room Geometry ────────────────────────────────────────────────────
 
 def extract_room_geometry(scan_data: Dict) -> Optional[Dict]:
-    """Extract room dimensions: depth from avg(max_depth_col_m), width from camera FOV."""
+    """Extract room dimensions from depth data.
+
+    wall_depth = max(max_depth_col_m)  — distance to the far (back) wall.
+    wall_width = (img_w / fx) * min(max_depth_col_m) — the min depth columns
+    correspond to side walls (the closest walls the camera can see); projecting
+    the full image width at that depth gives the physical room width.
+    """
     cam = scan_data.get("camera")
     objects = scan_data.get("objects", [])
+
+    # Unwrap DEPTH_ANYTHING if present (same as add_scan)
+    if not cam and "DEPTH_ANYTHING" in scan_data:
+        da = scan_data["DEPTH_ANYTHING"]
+        cam = da.get("camera")
+        objects = da.get("objects", [])
+
     if not cam or not objects:
         return None
 
     wall_depths = [obj.get("max_depth_col_m", obj.get("depth_m", 2.0))
                    for obj in objects if obj.get("max_depth_col_m", 0) > 0.1]
-    wall_depth = sum(wall_depths) / len(wall_depths) if wall_depths else 2.0
+    if not wall_depths:
+        return None
+
+    wall_depth = max(wall_depths)           # back wall (farthest point)
+    side_depth = min(wall_depths)            # side walls (closest walls)
     fx = cam.get("fx", 500)
     img_w = cam.get("width", 640)
-    wall_width = (img_w / fx) * wall_depth
-    camera_lateral = (cam.get("cx", img_w / 2) / fx) * wall_depth
+    wall_width = (img_w / fx) * side_depth
+    camera_lateral = (cam.get("cx", img_w / 2) / fx) * side_depth
 
     return {"wall_depth_m": round(wall_depth, 4),
             "wall_width_m": round(wall_width, 4),
@@ -241,20 +258,38 @@ class PixelRoomMapper:
                 max(0.1, min(v_m, self.room_height_m / 3)))
 
     def calculate_position(self, bbox, yaw, fw, depth_m, intrinsics=None, max_depth_col_m=None):
-        cx_px = (bbox[0] + bbox[2]) / 2
-        if max_depth_col_m and max_depth_col_m > 0.01:
-            ratio = depth_m / max_depth_col_m
-            fwd = ratio * (self.room_height_m if abs(math.cos(yaw)) > 0.5 else self.room_width_m)
-        else:
-            fwd = depth_m
+        """Compute world position from depth geometry using camera intrinsics.
+
+        Uses depth_m as the true forward Z coordinate, then derives the
+        lateral X from the pinhole model:  X = (u - cx) / fx * Z
+        The object ray angle is:           θ = atan2(X, Z)
+        This produces a physically correct ray direction for world placement.
+        """
+        cx_px = (bbox[0] + bbox[2]) / 2       # bbox centre in pixels
+
+        Z = depth_m                            # true forward depth
+
         if intrinsics:
-            lateral = ((cx_px - intrinsics["cx"]) / intrinsics["fx"]) * depth_m
-            ox = self.camera_x_m - lateral * math.cos(yaw) + fwd * math.sin(yaw)
-            oy = self.camera_y_m + lateral * math.sin(yaw) + fwd * math.cos(yaw)
+            # --- Ray direction from pinhole geometry ---
+            X_cam = ((cx_px - intrinsics["cx"]) / intrinsics["fx"]) * Z   # lateral in metres
+            theta = math.atan2(X_cam, Z)       # signed angle from optical axis
+
+            # World-frame displacement: rotate ray by camera yaw
+            #   camera convention:  yaw=0 → looking along +Y (south in grid)
+            #   sin(yaw) gives the X component, cos(yaw) gives the Y component
+            #   Negate theta: in image coords +X_cam = right, but when facing
+            #   south (+Y) camera-right is west (−X), so flip the sign.
+            world_angle = yaw - theta
+            dist = math.sqrt(X_cam * X_cam + Z * Z)   # true Euclidean distance along ray
+
+            ox = self.camera_x_m + dist * math.sin(world_angle)
+            oy = self.camera_y_m + dist * math.cos(world_angle)
         else:
+            # Fallback: FOV-based angle (no intrinsics available)
             ang = yaw - ((cx_px / fw) - 0.5) * self.camera_fov_h
-            ox = self.camera_x_m + fwd * math.cos(ang)
-            oy = self.camera_y_m - fwd * math.sin(ang)
+            ox = self.camera_x_m + depth_m * math.cos(ang)
+            oy = self.camera_y_m - depth_m * math.sin(ang)
+
         return self._clamp(ox, oy)
 
     # ── Duplicate detection ──
@@ -277,6 +312,11 @@ class PixelRoomMapper:
     # ── Scan Ingestion ──
 
     def add_scan(self, scan_data: Dict, yaw: float = 0.0):
+        if "DEPTH_ANYTHING" in scan_data:
+            da = scan_data["DEPTH_ANYTHING"]
+            scan_data["camera"] = da.get("camera", {})
+            scan_data["objects"] = da.get("objects", [])
+
         cam = scan_data.get("camera", {})
         intrinsics = {"fx": cam.get("fx", 500), "fy": cam.get("fy", 500),
                       "cx": cam.get("cx", cam.get("width", 640) / 2),
