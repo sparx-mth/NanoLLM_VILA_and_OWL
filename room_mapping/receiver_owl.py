@@ -30,21 +30,21 @@ def ingest():
         except Exception:
             stem = f"frame_{int(time.time())}"
 
-        # 3) Save meta JSON (pretty) — write new file FIRST
+        # 3) In single-image mode, clear old files then wait so watcher sees the change
+        if not cfg.accumulate_mode:
+            for old_file in os.listdir(OUT_DIR):
+                old_path = os.path.join(OUT_DIR, old_file)
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
+            time.sleep(1)
+
+        # 4) Save meta JSON (pretty)
         json_name = secure_filename(f"{stem}_dets.json")
         json_path = os.path.join(OUT_DIR, json_name)
         with open(json_path, "w") as f:
             json.dump(meta, f, indent=2)
-
-        # 4) In single-image mode, clear old files (keep the one just written)
-        if not cfg.accumulate_mode:
-            for old_file in os.listdir(OUT_DIR):
-                old_path = os.path.join(OUT_DIR, old_file)
-                if old_path != json_path:
-                    try:
-                        os.remove(old_path)
-                    except Exception:
-                        pass
 
         print(f"[ingest] {stem}: {len(meta.get('detections', []))} det(s)  -> saved")
         return jsonify({"ok": True, "stem": stem}), 200
