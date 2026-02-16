@@ -24,7 +24,7 @@ Notes:
 
 
 run command both process folder and comm original
-python3 comm_manager.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint http://192.168.131.21:5050/prompts       --captures-root /home/user/jetson-containers/data/R2/    --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --vlm-timeout 60
+python3 comm_manager.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint http://192.168.131.21:5050/prompts       --captures-root /home/user/jetson-containers/data/R1/    --nanoowl-endpoint http://192.168.131.22:5060/infer  --forward-timeout 45   --forward-retries 3     --nanoowl-timeout 70   --nanoowl-annotate 0     --forward-json-url http://192.168.131.23:9090/ingest --endpoint http://192.168.131.22:8080/describe    --watch-interval 5.0 --sleep-between 20 --vlm-timeout 60
 
 """
 import datetime
@@ -89,7 +89,7 @@ VLLM_MAX_TOKENS = 512
 VLLM_TEMPERATURE = 0.1
 
 TILES_ROOT_DEFAULT = "/home/user/jetson-containers/data/tiles"
-OUT_ROOT_DEFAULT   = "/home/user/jetson-containers/data/R2"
+OUT_ROOT_DEFAULT   = "/home/user/jetson-containers/data/R1"
 TILES_ANN_SUBDIR   = "____ANN"
 
 
@@ -912,9 +912,9 @@ def process_folder(
     def _vlm_job(task):
         jpg = task["jpg"]
         img_for_vlm = task["img_for_vlm"]
-        log(f"[vlm] POST {endpoint} image_path={img_for_vlm}")
+        log(f"[vlm] POST {VLLM_URL} image_path={img_for_vlm}")
         t0 = time.time()
-        res = call_vlm(endpoint, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
+        res = call_vlm(VLLM_URL, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
         dt = time.time() - t0
         log(f"[vlm] {jpg} took {dt:.2f}s ok={res.ok}")
         return jpg, res
@@ -1004,7 +1004,7 @@ def process_folder(
         except Exception as e:
             log(f"[worker] failed saving tile json: {e}")
 
-        # write TILE ann into tiles_ann_folder (NOT into R2, NOT via symlink)
+        # write TILE ann into tiles_ann_folder (NOT into R1, NOT via symlink)
         try:
             tile_ann_path = tiles_ann_folder_path / f"{base}_ann.jpg"
             ok = _annotate_tile_to_path(
@@ -1195,7 +1195,7 @@ def main():
     p.add_argument("--config", default="config/networks.yaml",
                         help="Path to networks config YAML")
     p.add_argument("--profile", default=None,
-                        help="Profile name (adsl|robotican). Overrides R2_PROFILE and defaults.profile")
+                        help="Profile name (adsl|robotican). Overrides R1_PROFILE and defaults.profile")
     p.add_argument("--no-config", action="store_true",
                         help="Disable config resolution and use CLI flags as-is")
 

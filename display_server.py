@@ -458,16 +458,33 @@ INDEX_HTML = r"""
     /* --- depth+ann overlay --- */
 
     /* --- depth+ann overlay --- */
-    .tile-overlay { position:relative; aspect-ratio: 16 / 9; }
-    .tile-overlay img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
 
-    /* layering */
-    .depth-img { z-index: 1; opacity: 0.95; }
-    .ann-img   { z-index: 2; opacity: 1.0; mix-blend-mode: normal; }
-    .tile-badge{ z-index: 3; }
+    .tile-overlay .depth-img, 
+    .tile-overlay .ann-img { 
+        position: absolute; 
+        inset: 0; 
+        width: 100%; 
+        height: 100%; 
+        object-fit: cover; 
+        display: block; 
+        transition: opacity 0.3s ease; 
+    }
+    .ann-img { 
+        z-index: 2; 
+        opacity: 1; 
+    }
 
-    /* only when depth exists */
-    .tile-overlay.has-depth .ann-img { opacity: 0.6; }
+    .depth-img { 
+        z-index: 1; 
+    }
+
+    .card:hover .ann-img { 
+        opacity: 0; 
+    }
+    
+    .tile-overlay.has-depth .ann-img { 
+        opacity: 1; 
+    }
         
   </style>
 </head>
