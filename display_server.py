@@ -482,9 +482,8 @@ INDEX_HTML = r"""
         opacity: 0; 
     }
     
-    .tile-overlay.has-depth .ann-img { 
-        opacity: 1; 
-    }
+    .tile-badge { z-index: 3; }
+
         
   </style>
 </head>

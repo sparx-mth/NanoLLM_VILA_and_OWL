@@ -404,7 +404,7 @@ def _draw_label_box(img, x1, y1, text, color):
     Draw a filled background for readable label text.
     """
     font  = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 1.5
+    scale = 2.0
     thick = 2
     (tw, th), bl = cv2.getTextSize(text, font, scale, thick)
     cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), color, thickness=-1)
