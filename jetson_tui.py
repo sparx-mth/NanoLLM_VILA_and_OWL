@@ -76,10 +76,7 @@ def main():
         choice = input("Select an option: ").strip().lower()
 
         comm_cmd = (
-            f"python3 comm_manager_vllm.py --profile robotican "
-            f"--vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 "
-            f"--captures-root {CAPTURES_ROOT} --endpoint http://192.168.131.22:8080 "
-            f"--host 192.168.131.22 --force --depth-endpoint http://192.168.131.22:5070/bbox_depth"
+            f"python3 comm_manager_vllm_batch.py   --profile robotican   --vllm-model cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://192.168.131.22:8080   --overlap 0.3   --force"
         )
 
         if choice == '1':
@@ -94,11 +91,12 @@ def main():
 
         elif choice == '3':
             # Stage 1: Capture
-            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 2 --cols 2"
+            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 1 --cols 1"
             run_ssh_interactively(cap_cmd, "Stage 1: Capture")
 
             # Stage 2: Process (Now with Auto-Exit)
             print("\nMoving to Stage 2: Automatic Inference...")
+            cleanup_remote_port(5050)  # Kill old Comm Manager
             run_comm_manager_auto(comm_cmd)
             input("\nPipeline Finished. Press Enter...")
 
