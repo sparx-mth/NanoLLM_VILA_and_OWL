@@ -38,14 +38,21 @@ class DynamicHouseRenderer:
         self.house_height_m = self.structure["house_dimensions_m"]["height"]
         self.grid_resolution = self.structure["grid_resolution"]
 
-        # Calculate grid size
-        self.grid_width = int(self.house_width_m / self.grid_resolution)
-        self.grid_height = int(self.house_height_m / self.grid_resolution)
-
         # Load dynamic tile registry
         self.tile_registry = {}
         self.tile_colors = {}
         self.load_tile_registry()
+
+        # Load grid and derive dimensions from actual array shape
+        try:
+            self.grid = np.loadtxt(map_txt, dtype=np.int8)
+        except:
+            fallback_w = int(round(self.house_width_m / self.grid_resolution))
+            fallback_h = int(round(self.house_height_m / self.grid_resolution))
+            self.grid = np.full((fallback_h, fallback_w), 0, dtype=np.int8)
+
+        # Use actual grid shape — never recompute from floats
+        self.grid_height, self.grid_width = self.grid.shape
 
         # Display parameters
         self.cell_size = max(5, min(50, cell_size))
@@ -63,12 +70,6 @@ class DynamicHouseRenderer:
         self.font_title = pygame.font.Font(None, 26)
         self.font_stats = pygame.font.Font(None, 22)
         self.font_objects = pygame.font.Font(None, 40)
-
-        # Load grid
-        try:
-            self.grid = np.loadtxt(map_txt, dtype=np.int8)
-        except:
-            self.grid = np.full((self.grid_height, self.grid_width), 0, dtype=np.int8)
 
         # Auto-reload
         self.last_reload = pygame.time.get_ticks()
@@ -225,8 +226,14 @@ class DynamicHouseRenderer:
         """Reload map and structure."""
         try:
             new_grid = np.loadtxt(cfg.house_map_txt, dtype=np.int8)
-            if new_grid.shape == self.grid.shape:
-                self.grid = new_grid
+            self.grid = new_grid
+            # Update dimensions from actual grid shape
+            new_h, new_w = new_grid.shape
+            if new_w != self.grid_width or new_h != self.grid_height:
+                self.grid_width, self.grid_height = new_w, new_h
+                self.window_width = self.grid_width * self.cell_size + self.legend_width
+                self.window_height = self.grid_height * self.cell_size
+                self.screen = pygame.display.set_mode((self.window_width, self.window_height))
 
             with open(cfg.unified_rooms_json, 'r') as f:
                 self.structure = json.load(f)
