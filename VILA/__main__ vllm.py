@@ -29,8 +29,67 @@ import numpy as np
 from types import SimpleNamespace
 
 # NanoLLM stack (assumes your existing environment)
-from nano_llm import NanoLLM, ChatHistory, ChatTemplates, BotFunctions
-from nano_llm.utils import ImageExtensions, ArgParser, KeyboardInterrupt, load_prompts, print_table
+try:
+    from nano_llm import NanoLLM, ChatHistory, ChatTemplates, BotFunctions
+    from nano_llm.utils import ImageExtensions, ArgParser, KeyboardInterrupt, load_prompts, print_table
+except Exception:
+    # Provide light fallbacks so --api vllm mode can run without nano_llm installed.
+    import argparse
+    ImageExtensions = ["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif"]
+
+    class ArgParser(argparse.ArgumentParser):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+
+    class KeyboardInterrupt:
+        def __init__(self):
+            pass
+        def reset(self):
+            pass
+        def __bool__(self):
+            return False
+
+    def load_prompts(x):
+        if not x:
+            return []
+        # If x is a filename, try to read lines; otherwise treat as single prompt
+        try:
+            if os.path.exists(x):
+                with open(x, "r", encoding="utf-8") as f:
+                    return [l.strip() for l in f if l.strip()]
+        except Exception:
+            pass
+        return [x]
+
+    def print_table(x):
+        return
+
+    class NanoLLM:
+        @staticmethod
+        def from_pretrained(*a, **kw):
+            raise RuntimeError("nano_llm not installed; only --api vllm mode works with fallback")
+
+    class ChatTemplates:
+        pass
+
+    class BotFunctions:
+        @staticmethod
+        def run(*a, **kw):
+            return None
+
+    class ChatHistory:
+        def __init__(self, model=None, chat_template=None, system_prompt=None):
+            self.messages = []
+            self.kv_cache = None
+            self.template = SimpleNamespace(stop=[])
+        def append(self, role, content):
+            self.messages.append({"role": role, "content": content})
+        def reset(self):
+            self.messages = []
+        def embed_chat(self, *a, **kw):
+            return None, None
+        def turn(self, who="user"):
+            return True
 
 # ---------------------------
 # Lightweight HTTP client (stdlib)
