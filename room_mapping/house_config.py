@@ -56,7 +56,10 @@ def _build_parser(defaults):
 
     for key, val in sorted(defaults.items()):
         flag = f"--{key}"
-        if val is None:
+        if val is None and key in ("room_bbox",):
+            parser.add_argument(flag, nargs="+", type=int, default=None,
+                                help=f"(default: None)")
+        elif val is None:
             parser.add_argument(flag, default=None, help=f"(default: None)")
         elif isinstance(val, bool):
             parser.add_argument(flag, type=_str_to_bool, default=val,

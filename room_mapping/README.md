@@ -166,6 +166,9 @@ python run_llm_with_web.py --grid_cells 80 80 --cell_size 15
 
 # Use a different config file entirely
 python run_llm_with_web.py --config production_config.json
+
+# Use office map
+python run_llm_with_web.py --mode existing_map --room_bbox 23 10 40 24 --room_name MAMAD --existing_map office_map.txt --existing_json office.json --camera_wall south
 ```
 
 Individual scripts accept the same flags:

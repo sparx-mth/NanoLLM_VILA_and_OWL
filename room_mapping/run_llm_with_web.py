@@ -151,7 +151,13 @@ def main():
 
             for name, proc in processes:
                 if proc.poll() is not None:
-                    print(f"\n Warning: {name} has stopped")
+                    print(f"\n Warning: {name} has stopped (exit code: {proc.returncode})")
+                    stderr_out = proc.stderr.read() if proc.stderr else ""
+                    stdout_out = proc.stdout.read() if proc.stdout else ""
+                    if stderr_out:
+                        print(f"  STDERR: {stderr_out[-500:]}")
+                    if stdout_out:
+                        print(f"  STDOUT (last): {stdout_out[-500:]}")
                     if name == "Web Server":
                         print("Restarting Web Server...")
                         new_proc = _spawn("web_mission_server_llm.py")

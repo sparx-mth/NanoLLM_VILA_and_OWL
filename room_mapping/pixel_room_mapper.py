@@ -30,7 +30,7 @@ class DynamicTileManager:
         (240,240,240), (45,45,45),    (0,210,80),    (160,100,40),   # free/wall/camera/door
         (230,25,75),   (0,130,200),   (255,190,0),   (145,30,180),   # 4-7
         (245,130,48),  (70,240,240),  (240,50,230),  (210,245,60),   # 8-11
-        (0,128,128),   (170,110,40),  (128,128,0),   (0,75,145),     # 12-15
+        (0,128,128),   (34,139,34),   (128,128,0),   (0,75,145),     # 12-15
         (128,0,0),     (255,215,180), (170,255,195), (230,190,255),  # 16-19
         (255,250,200), (60,180,75),   (220,190,255), (255,127,80),   # 20-23
         (0,200,160),   (188,143,143), (75,0,130),    (255,99,71),    # 24-27
@@ -404,6 +404,70 @@ def process_files(mode="standalone", existing_map=None, existing_json=None,
         print(f"No JSON files in {bbox_dir}"); return 0
     print(f"Found {len(json_files)} JSON files")
 
+    # For existing_map mode, derive resolution from wall geometry + bbox cell count
+    if mode == "existing_map" and room_bbox:
+        x1, y1, x2, y2 = room_bbox
+        cells_w, cells_h = x2 - x1, y2 - y1
+
+        # Pre-scan for wall geometry
+        wall_geometry = None
+        for jf in sorted(json_files):
+            try:
+                with open(jf) as f: data = json.load(f)
+                geom = extract_room_geometry(data)
+                if geom:
+                    wall_geometry = geom
+                    print(f"  Wall data: depth={geom['wall_depth_m']:.2f}m "
+                          f"width={geom['wall_width_m']:.2f}m"); break
+            except Exception: continue
+
+        # Get physical room dimensions from wall geometry
+        config = compute_room_config(wall_geometry, camera_wall, camera_position_along_wall)
+        if room_width_m is not None:  config["room_width_m"] = room_width_m
+        if room_height_m is not None: config["room_height_m"] = room_height_m
+
+        # Resolution = physical dimension / cell count
+        res_x = config["room_width_m"] / cells_w
+        res_y = config["room_height_m"] / cells_h
+        grid_resolution = (res_x + res_y) / 2
+
+        # Recompute camera for final dimensions
+        config = compute_room_config(
+            {"wall_depth_m": config["room_height_m"] if camera_wall in ("north","south")
+                             else config["room_width_m"],
+             "wall_width_m": config["room_width_m"] if camera_wall in ("north","south")
+                             else config["room_height_m"],
+             "camera_lateral_m": 0},
+            camera_wall, camera_position_along_wall)
+
+        print(f"  Existing map: {cells_w}x{cells_h} cells, "
+              f"room={config['room_width_m']:.3f}x{config['room_height_m']:.3f}m, "
+              f"res=({res_x:.4f}, {res_y:.4f})")
+
+        # Create mapper and process
+        mapper = PixelRoomMapper(
+            mode=mode, room_width_m=config["room_width_m"],
+            room_height_m=config["room_height_m"], grid_resolution=grid_resolution,
+            res_x=res_x, res_y=res_y,
+            existing_map_file=existing_map, existing_json_file=existing_json,
+            room_bbox=room_bbox, room_name=room_name,
+            camera_fov_h=cfg.camera_fov_h, camera_fov_v=60,
+            camera_x_m=config["camera_x_m"], camera_y_m=config["camera_y_m"])
+
+        config_yaw = config["yaw"]
+        for jf in sorted(json_files):
+            try:
+                print(f"Processing: {os.path.basename(jf)}")
+                with open(jf) as f: sd = json.load(f)
+                pose = sd.get('pose', {})
+                yaw = pose['yaw'] if 'yaw' in pose else config_yaw
+                mapper.add_scan(sd, yaw)
+            except Exception as e:
+                print(f"Error: {jf}: {e}"); import traceback; traceback.print_exc()
+
+        mapper.save()
+        return len(json_files)
+
     # 1. Pre-scan for wall data
     wall_geometry = None
     for jf in sorted(json_files):
@@ -561,7 +625,8 @@ def main():
                     if n: print(f"Processed {n} files -> {cfg.unified_rooms_json} + {cfg.house_map_txt}")
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
-                    write_empty_room(grid_cells=grid_cells, camera_wall=camera_wall)
+                    if mode != "existing_map":
+                        write_empty_room(grid_cells=grid_cells, camera_wall=camera_wall)
                 last_count = len(files)
             time.sleep(cfg.mapper_poll_interval)
     except KeyboardInterrupt:
