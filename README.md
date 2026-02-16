@@ -232,3 +232,13 @@ curl -s http://192.168.131.21:5050/prompts \
   -H "Content-Type: application/json" \
   -d '{"caption":"two black suitcases with red and white labels on the ground"}'
   ```
+
+
+### check the results here:
+
+```
+  http://192.168.131.23:8080/
+
+  http://192.168.131.22:8090/
+
+  ```
