@@ -70,6 +70,7 @@ def parse_args():
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 JSON_EXT = ".json"
 
+_TILE_RE = re.compile(r"^(frame_\d{4}_\d{2}_\d{2}___\d{2}_\d{2}_\d{2})_tile_(\d+)_(\d+)$")
 
 
 @dataclass
@@ -102,7 +103,75 @@ def _depth_variant(path: Path) -> Optional[Path]:
                 return cand
     return None
 
+def _group_tiles(items: List[Item], root: Path) -> List[dict]:
+    """
+    Group tiles into puzzles using filename pattern or JSON tile_index.
+    Returns list of groups sorted by newest ctime.
+    """
+    groups: Dict[str, dict] = {}
 
+    for it in items:
+        stem = Path(it.basename).stem  # already stem
+        m = _TILE_RE.match(stem)
+        if not m:
+            # Not a tile – you can skip or treat as single-item group
+            continue
+
+        group_id, r_s, c_s = m.group(1), m.group(2), m.group(3)
+        r, c = int(r_s), int(c_s)
+
+        # Try read JSON to get authoritative tile_index (optional)
+        if it.json_rel:
+            try:
+                with open(root / it.json_rel, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+                ti = doc.get("tile_index")
+                if isinstance(ti, list) and len(ti) == 2:
+                    r, c = int(ti[0]), int(ti[1])
+            except Exception:
+                pass
+
+        g = groups.get(group_id)
+        if g is None:
+            g = {
+                "group_id": group_id,
+                "ctime": it.ctime,
+                "tiles": [],
+                "max_r": r,
+                "max_c": c,
+            }
+            groups[group_id] = g
+
+        g["ctime"] = max(g["ctime"], it.ctime)
+        g["max_r"] = max(g["max_r"], r)
+        g["max_c"] = max(g["max_c"], c)
+
+        g["tiles"].append({
+            "r": r,
+            "c": c,
+            "basename": it.basename,
+            "image": f"/img/{it.image_rel}",
+            "json": (f"/meta/{it.json_rel}" if it.json_rel else None),
+            "text": it.text,  # ✅ ADD THIS
+            "vlm_terms": it.vlm_terms or [],
+            "owl_labels": it.owl_labels or [],
+            "ctime": it.ctime,
+            "depth": (f"/img/{it.depth_rel}" if getattr(it, "depth_rel", None) else None),
+
+        })
+    # finalize rows/cols and sort tiles
+    out = []
+    for g in groups.values():
+        g["rows"] = g["max_r"] + 1
+        g["cols"] = g["max_c"] + 1
+        g["tiles"].sort(key=lambda t: (t["r"], t["c"]))
+        # cleanup
+        g.pop("max_r", None)
+        g.pop("max_c", None)
+        out.append(g)
+
+    out.sort(key=lambda x: x["ctime"], reverse=True)
+    return out
 
 def _extract_vlm_terms(doc: Dict) -> List[str]:
     try:
@@ -324,7 +393,30 @@ def create_app(root_dir: Path, scan_interval: float, latest_only: bool, static_d
         return jsonify({"ok": True, "count": len(payload), "items": payload,
                         "root": str(root), "scan_root": str(scan_root), "current_run": current_run})
 
-    
+    @app.get("/api/puzzles")
+    def api_puzzles():
+        root: Path = app.config["ROOT_DIR"]
+        latest_only: bool = app.config.get("LATEST_ONLY", False)
+        scan_root = root
+        current_run = None
+
+        if latest_only:
+            last_dir = _latest_run_dir(root)
+            if last_dir is not None:
+                scan_root = last_dir.resolve()
+                current_run = str(last_dir.relative_to(root))
+
+        items = _collect_items(scan_root, rel_root=root)
+        groups = _group_tiles(items, root=root)
+
+        return jsonify({
+            "ok": True,
+            "count_groups": len(groups),
+            "groups": groups,
+            "root": str(root),
+            "scan_root": str(scan_root),
+            "current_run": current_run
+        })
 
     @app.get("/img/<path:rel>")
     def serve_image(rel: str):
@@ -417,6 +509,10 @@ INDEX_HTML = r"""
     .close { cursor:pointer; font-size:22px; line-height:22px; padding:4px 10px; color:#93c5fd; border:1px solid #1f2937; border-radius:10px; }
     pre { margin:0; padding:12px; background:#0b1629; border:1px solid #1f2937; border-radius:12px; color:#c7d2fe; font-size:12px; overflow:auto; max-height:60vh; }
    
+    .puzzle-card { background:var(--card); border:1px solid #1f2937; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+    .puzzle-head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid #1f2937; }
+    .puzzle-title { font-size:14px; color:#93c5fd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:75%; }
+    .puzzle-grid { display:grid; gap:0px; padding:0px; background:#0b1220; border-radius: 14px; overflow: hidden; }
     .tile { position:relative; border-radius:0px; overflow:hidden; border:0px; background:#0a0f1b; }
     .tile img { width:100%; height:auto; object-fit:cover; display:block; cursor:pointer; }
     .tile-badge {
@@ -522,45 +618,68 @@ INDEX_HTML = r"""
       return `<div class="chips"><span class="chips-title">${title}</span>${chips}</div>`;
     }
 
-    function renderItems(items){
+    function renderPuzzles(groups){
     const grid = document.getElementById('grid');
-    document.getElementById('count').textContent = items.length;
+    document.getElementById('count').textContent = groups.length;
 
-    grid.innerHTML = items.map(it => {
-        const desc = cleanText(it.text || '');
-        const vlmRow = chipRow('VLM', it.vlm_terms || []);
+    grid.innerHTML = groups.map(g => {
+        const cols = Math.max(1, g.cols || 1);
+        const style = `grid-template-columns: repeat(${cols}, 1fr);`;
 
-        const media = `
-        <div class="tile-media tile-overlay ${it.depth ? 'has-depth' : ''}">
-            ${it.depth ? `<img class="depth-img" src="${it.depth}" alt="depth" />` : ''}
-            <img class="ann-img" src="${it.image}" alt="${it.basename}"
-                onclick="openModal(${encodeURIComponent(JSON.stringify(JSON.stringify(it)))})" />
+        const firstTile = (g.tiles || [])[0] || {};
+        const desc = cleanText(firstTile.text || '');
+
+        const seen = new Set();
+        const allTerms = [];
+        (g.tiles || []).forEach(t => {
+        (t.vlm_terms || []).forEach(x => {
+            const s = String(x || '').trim();
+            if(!s) return;
+            if(seen.has(s)) return;
+            seen.add(s);
+            allTerms.push(s);
+        });
+        });
+
+        const tilesHtml = (g.tiles || []).map(t => `
+        <div class="tile">
+            <div class="tile-media tile-overlay ${t.depth ? 'has-depth' : ''}">
+            <span class="tile-badge">[${t.r},${t.c}]</span>
+
+            ${t.depth ? '<img class="depth-img" src="' + t.depth + '" alt="depth" />' : ''}
+
+            <img class="ann-img" src="${t.image}" alt="[${t.r},${t.c}]"
+                onclick="openModal(${encodeURIComponent(JSON.stringify(JSON.stringify(t)))})" />
+            </div>
         </div>
-        `;
+        `).join('');
+
+        const groupVlmRow = chipRow('VLM', allTerms);
 
         return `
-        <div class="card">
-            ${media}
-            <div class="body">
-            <div class="title">
-                <div class="basename" title="${it.basename}">${it.basename}</div>
-                <div class="ctime">${fmtTime(it.ctime)}</div>
+        <div class="puzzle-card">
+            <div class="puzzle-head">
+            <div class="puzzle-title" title="${g.group_id}">${g.group_id}</div>
+            <div class="ctime">${fmtTime(g.ctime)}</div>
             </div>
-            ${vlmRow || ''}
-            ${desc ? `<div class="text">${desc}</div>` : ''}
+
+            <div class="puzzle-grid" style="${style}">
+            ${tilesHtml || '<div style="padding:10px;color:#9ca3af">No tiles</div>'}
             </div>
+
+            ${groupVlmRow ? `<div style="padding:10px 14px;">${groupVlmRow}</div>` : ''}
+
         </div>
         `;
     }).join('');
     }
 
 
-
     async function load(){
     try{
-        const r = await fetch('/api/items');
+        const r = await fetch('/api/puzzles');
         const js = await r.json();
-        if(js && js.ok) renderItems(js.items || []);
+        if(js && js.ok) renderPuzzles(js.groups || []);
     }catch(e){ console.error(e); }
     }
     function start(){

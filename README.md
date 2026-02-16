@@ -1,79 +1,13 @@
 
 # **Pipeline Stages**
 
-on the computer:
-
-##  *APRIL TAG**
-first- get in to the docker:
-```bash
-
- docker run -it --rm     --net=host     --ipc=host     --env="DISPLAY"     --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw"     --name ros2_apriltag     ros2-humble-apriltag
-```
-
-```bash
-
-source src/./ros2_env.sh 
-```
-
-```bash
-ros2 run apriltag_ros apriltag_node --ros-args \
-  -r image_rect:=/R2/camera/image_raw \
-  -r camera_info:=/R2/camera/camera_info \
-  -p family:=36h11 \
-  -p size:=2.00 \
-  -p publish_tf:=true \
-  -p qos_profile:=sensor_data \
-  --log-level debug
-```
-
-in another terminal run inside the backend run the video stream:
-```bash
-
-docker exec -it backend_id bash
-```
-```bash
-source src/./ros2_env.sh 
-```
-```bash
-cd src/examples/src
- python3 video_stream.py 
-```
-
-in another terminal inside the backend run the service call:
-```bash
-docker exec -it backend_id bash
-```
-```bash
-source src/./ros2_env.sh 
-```
-```bash
-ros2 service call /R2/start_capture std_srvs/srv/Trigger "{}"
-```
-
-
-## 1. **VILA API Server**
+## 1. ** VLLM WITH QWEN:**
 
 first- get in to the jetson:
 ```
 ssh -X user@192.168.131.22
 ```
-**Run inside the VILA container:**
-```bash
-jetson-containers run -it   --publish 8080:8080   --volume /home/user/jetson-containers/data:/home/user/jetson-containers/data  nano_llm_custom /bin/bash
 
-```
-
-Then start the API server:
-```bash
-python3 -m nano_llm.chat   --api=mlc   --model Efficient-Large-Model/VILA1.5-3b   --max-context-len 256   --max-new-tokens 32   --save-json-by-image   --server --port 8080 --notify-url http://172.16.17.15:5050/from_vila
-```
-test:
-```bash 
-curl -s -X POST http://127.0.0.1:8080/describe   -H "Content-Type: application/json"   -d '{"image_path":"/home/user/jetson-containers/data/R1/R1_20260127_133752.jpg"}'
-```
-
-### VLLM WITH QWEN:
-***do not use***
 in terminal 1:
 ```bash
 docker run --rm -it \
@@ -92,16 +26,27 @@ vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
   --port 8080 \
   --dtype float16 \
   --gpu-memory-utilization 0.5 \
-  --max-model-len 512 \
+  --max-model-len 2048 \
   --max-num-batched-tokens 128 \
-  --max-num-seqs 1 \
+  --max-num-seqs 4 \
   --swap-space 0 \
   --enforce-eager
 ```
 
-test:
-cd 
+** if its not working, try:
+  --max-model-len 512 
+  --max-num-seqs 1
+  --gpu-memory-utilization 0.4
 
+
+in terminal 2:
+```
+cd /jetson-containers/data
+python3 -m http.server 9000 --bind 0.0.0.0
+```
+
+test:
+```
 curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
     "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
     "messages": [{
@@ -113,7 +58,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: applicatio
     }],
     "max_tokens": 64
   }' | jq -r '.choices[0].message.content'
-
+```
 
 
 ## 3. **NanoOWL Object Detector**
@@ -159,7 +104,7 @@ ssh -X user@192.168.131.22
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
 python3 display_server.py  \
- --root /home/user/jetson-containers/data/R2  \
+ --root /home/user/jetson-containers/data/R1  \
   --host 0.0.0.0   --port 8090  \
    --latest-only
 
@@ -176,16 +121,79 @@ ssh -X user@192.168.131.22
 **Run:**
 ```bash
 cd ~/GIT/NanoLLM_VILA_and_OWL
- python3 comm_manager.py --profile adsl   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://172.16.17.15:8080/describe   --force
+python3 comm_manager_vllm.py --profile robotican   --vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16   --captures-root /home/user/jetson-containers/data/R1/   --endpoint http://192.168.131.22:8080  --host 192.168.131.22  --force --depth-endpoint http://192.168.131.22:5070/bbox_depth
+
+
 
 ```
+## 6. **capture_on_enter.py**
+first- get in to the jetson:
 
-## 6. **LLM Object List Extractor**
-
-Connect to Jetson #2:
+```
+ssh -X user@192.168.131.22
+```
+**Run:**
 ```bash
-ssh user@192.168.131.21
+cd ~/GIT/NanoLLM_VILA_and_OWL
+python3 capture_on_enter.py --rows 1 --cols 1 --overlap 0.0
 ```
+
+
+
+## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
+Connect to Jetson #3:
+```bash
+ssh nvidia@192.168.131.23
+```
+Terminal 1 – Start Ollama Server
+```bash
+ollama serve
+```
+
+ * if ollama not install - run : 
+```bash
+ollama run llama3.1:8b
+ollama run llama3.2:3b 
+```
+
+Terminal 2 – Launch Room Mapping
+```bash
+cd ~/GIT/NanoLLM_VILA_and_OWL/room_mapping
+source .venv/bin/activate
+pip3 install requirements.txt
+python3 run_llm_with_web.py
+```
+
+## 8. Depth Anythnig v3 
+**Build (colcon)**
+From your workspace root:
+```bash
+cd ~/depth_anything_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select depth_anything_v3 --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+**Run the HTTP server**
+```bash
+ros2 run depth_anything_v3 depth_anything_http_server \
+  --model /home/user/depth_anything_ws/src/ros2-depth-anything-v3-trt/onnx/DA3-SMALL/DA3-SMALL.onnx \
+  --camera-yaml /home/user/depth_anything_ws/src/ros2-depth-anything-v3-trt/camera_info_4k.yaml \
+  --host 0.0.0.0 --port 5070 \
+  --save-depth 1 \
+  --save-every 1 \
+  --save-max-depth 10.0
+```
+
+### Notes:
+- Saving happens **per request** (not per second). `--save-every N` saves every N-th request.
+- The save directory is derived from the request's `image_dir`:
+  if `image_dir=/a/b/c` then depth images go under `/a/b/c_depth/`.
+
+
+
+### old
+
+ - if you need llm jetson nano - 
 in terminal 1:
 ```bash
 docker run --rm -it \
@@ -224,29 +232,3 @@ curl -s http://192.168.131.21:5050/prompts \
   -H "Content-Type: application/json" \
   -d '{"caption":"two black suitcases with red and white labels on the ground"}'
   ```
-
-## 7. **Room Mapping + LLM Navigation Interface (Jetson #3 – 172.16.17.15)**
-Connect to Jetson #3:
-```bash
-ssh nvidia@192.168.131.23
-```
-Terminal 1 – Start Ollama Server
-```bash
-ollama serve
-```
-
- * if ollama not install - run : 
-```bash
-ollama run llama3.1:8b
-ollama run llama3.2:3b 
-```
-
-Terminal 2 – Launch Room Mapping
-```bash
-cd ~/GIT/TheAgency/src/room_mapping
-source .venv/bin/activate
-pip3 install requirements.txt
-python3 run_llm_with_web.py
-```
-
-

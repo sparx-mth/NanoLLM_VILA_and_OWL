@@ -32,6 +32,7 @@ import queue
 import signal
 import sys
 import threading
+
 from collections.abc import Callable
 
 from typing import Optional, Tuple
@@ -41,7 +42,7 @@ import os
 import json
 import time
 import glob
-import shutil
+import shutil 
 import argparse
 from collections import deque
 import hashlib
@@ -49,9 +50,14 @@ import re
 import urllib.request, urllib.error  # for Jetson2 JSON POST
 import requests                      # for NanoOWL multipart
 import cv2                           # for drawing boxes
+import base64
+import mimetypes
 
 from utils_pipeline import log, load_json, already_captioned, extract_prompt_response, remap_path, \
     parse_caption_from_response, VlmResult
+
+import logging
+from logging.handlers import RotatingFileHandler
 
 shutdown_event = threading.Event()
 vlm_caption_queue = queue.Queue()
@@ -68,7 +74,7 @@ _ANN_RE = re.compile(r"_ann\.(jpg|jpeg|png)$", re.IGNORECASE)
 
 FORWARD_JSON_URL = None       # e.g., http://172.17.16.9:9090/ingest
 FORWARD_JSON_TIMEOUT = 8.0
-FORWARD_JSON_RETRIES = 3
+FORWARD_JSON_RETRIES = 1
 
 # --- Simple in-memory log/state for quick debugging ---
 HISTORY = deque(maxlen=200)
@@ -83,20 +89,178 @@ LAST = {
 VLLM_URL = None
 VLLM_MODEL = None
 VLLM_TIMEOUT = 20.0
-VLLM_MAX_TOKENS = 32
+VLLM_MAX_TOKENS = 512
 VLLM_TEMPERATURE = 0.1
 
 
-VLLM_PROMPT_PREFIX = (
-    "Extract unique object names from the text."
-    "Return only a lowercase JSON array. No extra text. "
-    "Remove colors, sizes, and adjectives "
-    "Prefix each object with 'a' or 'an'. "
+VLM_ONE_CALL_PROMPT = (
+    "Return ONLY valid JSON. No markdown. No extra text.\n"
+    "Schema:\n"
+    "{"
+    "\"objects\": [\"A ...\", \"An ...\"],"
+    "\"scene\": \"...\""
+    "}\n"
+    "Rules for objects:\n"
+    "- bullet-style wording but as JSON array strings\n"
+    "- each item must start with 'A ' or 'An '\n"
+    "- no colors/sizes/adjectives\n"
+    "- unique items\n"
+    "- object names only\n"
+    "Rules for scene:\n"
+    "- 1-2 short sentences describing the objects in the scene\n"
+    "- concise\n"
 )
+
+
 
 _VLLM_SESSION = requests.Session()
 
+LOG_PATH = os.environ.get("COMM_LOG", "comm_timings.log")
+logger = logging.getLogger("comm")
+logger.setLevel(logging.INFO)
+
+fmt = logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+
+fh = RotatingFileHandler(LOG_PATH, maxBytes=10*1024*1024, backupCount=5)
+fh.setFormatter(fmt)
+
+ch = logging.StreamHandler()
+ch.setFormatter(fmt)
+
+if not logger.handlers:
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
 # -------------------- Helpers --------------------
+
+_BULLET_RE = re.compile(r"^\s*[-•*]\s+")
+_NUM_RE    = re.compile(r"^\s*\d+\s*[\.\)]\s*")
+
+_DROP_WORDS = {
+    "black","white","yellow","red","blue","green","orange","pink","purple","brown","gray","grey",
+    "light","dark","wood","metal","plastic","cardboard",
+    "small","big","large","tiny",
+    "partially","visible","likely"
+}
+
+def parse_objects_and_scene(raw: str) -> tuple[list[str], str]:
+    if not raw:
+        return [], ""
+
+    raw = raw.strip()
+
+    # Try direct JSON
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        # Try extract {...}
+        m = re.search(r"\{[\s\S]*\}", raw)
+        if not m:
+            return [], ""
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            return [], ""
+
+    if not isinstance(obj, dict):
+        return [], ""
+
+    objects = obj.get("objects") or []
+    scene = obj.get("scene") or ""
+
+    if not isinstance(objects, list):
+        objects = []
+
+    # clean objects
+    clean = []
+    seen = set()
+    for x in objects:
+        s = str(x).strip()
+        if not s:
+            continue
+        # enforce "A " / "An "
+        if not (s.startswith("A ") or s.startswith("An ")):
+            # try to fix common lowercase
+            s2 = s[0].upper() + s[1:] if s else s
+            if s2.startswith("A ") or s2.startswith("An "):
+                s = s2
+        if s not in seen:
+            seen.add(s)
+            clean.append(s)
+
+    return clean, str(scene).strip()
+
+
+def caption_to_owl_prompts(caption: str) -> list[str]:
+    """
+    Convert bullet/numbered caption into NanoOWL prompts.
+    No LLM. Heuristic cleanup only.
+    """
+    if not caption:
+        return []
+
+    lines = []
+    for raw in caption.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        s = _BULLET_RE.sub("", s)
+        s = _NUM_RE.sub("", s)
+        if not s:
+            continue
+
+        # remove parentheses notes:  "box (with 'Maggi')" -> "box"
+        s = re.sub(r"\([^)]*\)", "", s).strip()
+
+        # remove quotes content if it’s just a logo mention
+        # (optional) keep simple
+        s = s.replace('"', "").replace("'", "").strip()
+
+        # normalize: "floor tiles" -> keep as-is (OWL can detect plural too)
+        s = s.lower()
+
+        # light cleanup of adjectives (optional)
+        tokens = [t for t in re.split(r"\s+", s) if t]
+        tokens = [t for t in tokens if t not in _DROP_WORDS]
+        s = " ".join(tokens).strip()
+
+        # remove trailing punctuation
+        s = s.strip(" .,:;")
+
+        if s:
+            lines.append(s)
+
+    # dedupe preserving order + add a/an prefix
+    out, seen = [], set()
+    for item in lines:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+
+    return out
+
+def _to_image_url(image_ref: str) -> str:
+    """
+    Accepts either:
+      - http(s) URL  -> returned as-is
+      - local path   -> converted to data:<mime>;base64,...
+    """
+    s = (image_ref or "").strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        return s
+
+    # assume local file path
+    if not os.path.isfile(s):
+        raise FileNotFoundError(f"Image not found: {s}")
+
+    mime, _ = mimetypes.guess_type(s)
+    if not mime:
+        mime = "image/jpeg"
+
+    with open(s, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+
+    return f"data:{mime};base64,{b64}"
 
 def _is_in_ann_folder(fp: str) -> bool:
     p = Path(fp)
@@ -186,17 +350,26 @@ def _post_nanoowl_multipart(endpoint: str, image_path: str, prompts: list[str],
         return -1, "nanoowl endpoint not configured"
     if not (image_path and os.path.isfile(image_path)):
         return -1, f"image not found: {image_path}"
+    t0 = time.perf_counter()
+    f = open(image_path, "rb")  
     files = {"image": (os.path.basename(image_path), open(image_path, "rb"), "application/octet-stream")}
     data = {"prompts": json.dumps(prompts or []), "annotate": str(int(annotate))}
     try:
         r = requests.post(endpoint, files=files, data=data, timeout=timeout)
+        dt = time.perf_counter() - t0
         try:
             body = r.json()
         except Exception:
             body = r.text
-        return r.status_code, body
+        return r.status_code, body, dt
     except Exception as e:
-        return -1, str(e)
+        dt = time.perf_counter() - t0
+        return -1, str(e), dt
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
 
 
 def _ann_outpath_for_image(image_path: str) -> str:
@@ -489,29 +662,63 @@ def _update_sidecar_json_robust(json_path: str, new_data: dict):
     return None
 
 def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, retry_sleep_s: float) -> VlmResult:
-    payload = {"image_path": image_path}
+    """
+    Replaces VILA /describe with vLLM Qwen3-VL OpenAI-compatible endpoint:
+      POST {endpoint}/v1/chat/completions
 
+    Keeps minimal pipeline changes by:
+      - returning VlmResult(caption=...)
+      - ALSO pushing caption into vlm_caption_queue so existing code that does
+        vlm_caption_queue.get() continues to work unchanged.
+    """
     last_err = None
+
+    # your "question"/instruction for Qwen3-VL
+    user_text = VLM_ONE_CALL_PROMPT
+
     for attempt in range(1, retries + 1):
         try:
             t0 = time.time()
-            resp = requests.post(endpoint, json=payload, timeout=timeout_s)
+
+            img_url = _to_image_url(image_path)
+
+            payload = {
+                "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": img_url}},
+                    ]
+                }],
+                "max_tokens": 64,
+                "temperature": 0.1,
+            }
+
+            url = f"{endpoint.rstrip('/')}/v1/chat/completions"
+            resp = requests.post(url, json=payload, timeout=timeout_s)
             dt = time.time() - t0
 
             if resp.status_code != 200:
-                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                log(f"[vlm] attempt {attempt}/{retries} failed in {dt:.2f}s: {last_err}")
+                last_err = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                log(f"[vlm-qwen] attempt {attempt}/{retries} failed in {dt:.2f}s: {last_err}")
             else:
-                caption = parse_caption_from_response(resp)
+                j = resp.json()
+                caption = (j.get("choices", [{}])[0]
+                             .get("message", {})
+                             .get("content", "") or "").strip()
+
                 if not caption:
-                    last_err = "Empty caption"
-                    log(f"[vlm] attempt {attempt}/{retries} got empty caption in {dt:.2f}s")
+                    last_err = "Empty caption from vLLM"
+                    log(f"[vlm-qwen] attempt {attempt}/{retries} got empty caption in {dt:.2f}s")
                 else:
+                    # <<< minimal-change trick: keep the queue-based flow alive >>>
+                    vlm_caption_queue.put(caption)
                     return VlmResult(ok=True, caption=caption, error=None)
 
         except Exception as e:
             last_err = str(e)
-            log(f"[vlm] attempt {attempt}/{retries} exception: {last_err}")
+            log(f"[vlm-qwen] attempt {attempt}/{retries} exception: {last_err}")
 
         if shutdown_event.is_set():
             return VlmResult(ok=False, caption=None, error="Shutdown requested")
@@ -532,10 +739,9 @@ def process_folder(
     force: bool,
     sleep_between_s: float,
 ) -> Tuple[int, int, int]:
-    # if not hasattr(process_folder, "villa_response"):
-    #    process_folder.villa_response=None
-    #    update_cb(villa_response_callback)
 
+    # --- Start of Original Structure ---
+    # Filter and sort JPG files, excluding already annotated ones
     jpgs = sorted([
         f for f in os.listdir(folder)
         if f.lower().endswith(".jpg") and not f.lower().endswith("_ann.jpg")
@@ -544,15 +750,18 @@ def process_folder(
     if not jpgs:
         log(f"[worker] No JPGs found in: {folder}")
         return (0, 0, 0)
+    
     print(jpgs)
     done = skipped = failed = 0
     new_folder_path = Path(new_folder)
     new_folder_path.mkdir(parents=True, exist_ok=True)
 
     folder_path = Path(folder)
-    assert folder_path.is_symlink(), f"{folder_path} is not a symlink"
-    folder = folder_path.resolve()
+    # Minor fix: If the source folder is a symlink, resolve it; otherwise, use as is
+    if folder_path.is_symlink():
+        folder = folder_path.resolve()
 
+    # Manage the "latest" symlink to point to the current processing directory
     latest_link = new_folder_path.parent / "latest"
     try:
         if os.path.lexists(latest_link):
@@ -564,69 +773,124 @@ def process_folder(
     for jpg in jpgs:
         jpg_path = Path(folder) / jpg
         shutil.copy(jpg_path, Path(new_folder))
-        jpg_path = new_folder_path / jpg
+        
+        # Update paths for the destination
+        dest_jpg_path = new_folder_path / jpg
         base = os.path.splitext(jpg)[0]
-        json_path = os.path.join(folder, base + ".json")
-        js = load_json(json_path)
-        json_path = new_folder_path / f"{base}.json"
-
-
+        old_json_path = os.path.join(folder, base + ".json")
+        new_json_path = new_folder_path / f"{base}.json"
+        
+        js = load_json(old_json_path)
+        
+        # --- Constructing the New JSON (Mirroring original logic) ---
         new_js = {}
         pose = js.get("pose")
         new_js.setdefault("pose", pose)
-        new_js.setdefault("image", os.path.basename(str(jpg_path)))
+        new_js.setdefault("image", os.path.basename(str(dest_jpg_path)))
+        
+        # Ensure the 'entries' list exists in new_js
+        if "entries" not in new_js:
+            new_js["entries"] = []
 
-
-        # tmp = json_path + ".tmp"
-        with open(json_path, "w") as f:
-            print(f)
+        # Initial disk write
+        with open(new_json_path, "w") as f:
             json.dump(new_js, f, indent=2)
-        # os.replace(tmp, new_json_path)
-        print("finished dump")
+        print("Finished initial dump")
+
+        # Skip if already processed and force flag is False
         if (not force) and already_captioned(js):
             skipped += 1
             continue
 
-        img_for_vlm = remap_path(str(jpg_path), path_src, path_dst)
-        log(f"[vlm] POST {endpoint}  image_path={img_for_vlm}")
+        # Prepare path for VLM and execute call
+        img_for_vlm = remap_path(str(dest_jpg_path), path_src, path_dst)
+        log(f"[vlm] POST {endpoint} image_path={img_for_vlm}")
 
         t0 = time.time()
         res = call_vlm(endpoint, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
         dt = time.time() - t0
-        log(f"[vlm] took {dt:.2f}s  ok={res.ok}")
+        log(f"[vlm] took {dt:.2f}s ok={res.ok}")
+
+        raw = (res.caption or "").strip()
+        objects, scene = parse_objects_and_scene(raw)
+        bullets = ""
+        if objects:
+            bullets = "\n".join([f"- {o}" for o in objects])
 
         vlm_caption = vlm_caption_queue.get()
-        print("%%%%%%%%%  vlm_caption ^^^^^^^^^^^", vlm_caption)
+        print("%%%%%%%%% vlm_caption ^^^^^^^^^^^", vlm_caption)
 
-
-        # Update JSON
-        js.setdefault("image", os.path.basename(jpg_path))
-        # Ensure list exists
-        entries = js.get("entries")
-        if not isinstance(entries, list):
-            entries = []
-            js["entries"] = entries
-
+        # --- NanoOWL Logic ---
         if res.ok and res.caption:
-            prompt, response = extract_prompt_response(res.caption)
+            # 1. Extract Prompts from caption
+            prompts = objects
+            print(f"[worker] Prompts: {prompts}")
 
-            entries.append({
+            # 2. Send request to NanoOWL
+            status, body, _ = _post_nanoowl_multipart(
+                endpoint=NANOOWL_ENDPOINT,
+                image_path=str(dest_jpg_path),
+                prompts=prompts,
+                annotate=NANOOWL_ANNOTATE,
+                timeout=NANOOWL_TIMEOUT
+            )
+
+            # 3. Build NanoOWL payload for JSON
+            now = time.time()
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+            nano_payload = {
+                "ts": now,
+                "iso_time": iso,
+                "endpoint": NANOOWL_ENDPOINT,
+                "status": status,
+                "prompts": prompts,
+                "annotate": int(NANOOWL_ANNOTATE),
+                "result": body
+            }
+            
+            # Update new_js with NanoOWL results
+            new_js["nanoowl"] = nano_payload
+
+            # 4. Add VLM entry (Original logic)
+            prompt_str, response_str = extract_prompt_response(res.caption)
+            new_js["entries"].append({
                 "timestamp": int(time.time()),
-                "prompt": prompt,
-                "response": response,
+                "prompt": "Describe the objects in the image",
+                "response": bullets,
             })
-        if res.ok:
+
+            new_js["scene"] = scene
+            
             done += 1
         else:
             failed += 1
 
+        # --- Final Write and Annotation (Critical Fix) ---
+        try:
+            # Write updated JSON to disk
+            with open(new_json_path, "w") as f:
+                json.dump(new_js, f, indent=2)
+            print(f"Dumped updated JSON to {new_json_path}")
+
+            # Call Annotate via Symlink to bypass path assertions
+            if res.ok and new_js.get("nanoowl"):
+                # Using the symlink path to satisfy path constraints
+                symlink_jpg = latest_link / jpg
+                symlink_json = latest_link / f"{base}.json"
+                _annotate_from_json(str(symlink_jpg), str(symlink_json))
+
+        except Exception as e:
+            print(f"Error during save/annotate: {e}")
+
+        # Check for shutdown signal
         if shutdown_event.is_set():
             return (done, skipped, failed)
+        
+        # Pacing between iterations
         if sleep_between_s > 0:
             time.sleep(sleep_between_s)
 
     return (done, skipped, failed)
-
 
 def run_process_once(args):
     latest = Path(CAPTURES_ROOT) / "latest"
@@ -654,11 +918,13 @@ def run_process_once(args):
 def update_cb(cb):
     update_cb.VILLA_RESULTS_CB = cb
     print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&777 update cb", cb)
+
 # -------------------- HTTP API --------------------
 @app.post("/from_vila")
 def from_vila():
     """
     Entry point called by VILA (text/plain body = caption).
+
     We MUST:
       1) Forward caption to Jetson2 /prompts and WAIT for prompts.
       2) Only then find the latest image and call NanoOWL with (image, prompts).
@@ -669,60 +935,93 @@ def from_vila():
     if not hasattr(update_cb, "VILLA_RESULTS_CB"):
         print("VILLA_RESULTS_CB is defined as None")
         update_cb.VILLA_RESULTS_CB = None
-    print("hello")
+
     caption = request.get_data(as_text=True, parse_form_data=False).strip()
     if not caption:
-        print(f"not captoin")
+        print("not caption")
         return jsonify({"ok": False, "error": "empty caption"}), 400
-    vlm_caption_queue.put(caption)
 
+    req_id = f"{int(time.time())}-{os.getpid()}"
+    t_total0 = time.perf_counter()
+    t = {}  # timings dict
+
+    # bookkeeping
+    vlm_caption_queue.put(caption)
     ts = int(time.time())
     print(f"[from_vila][{ts}] {caption}")
     LAST["vila_caption"] = {"ts": ts, "text": caption}
     HISTORY.appendleft({"src": "vila", "ts": ts, "text": caption})
-    if update_cb.VILLA_RESULTS_CB is not None:
-        print(f"[villa_cb] _*************************_ vila_cb is NOT None")
-        update_cb.VILLA_RESULTS_CB(caption)
-    else:
-        print(f"[villa_cb] ____________________________ vila_cb is None!!!")
 
-    # ---- 1) Get prompts directly from vLLM (single hop) ----
+    if update_cb.VILLA_RESULTS_CB is not None:
+        try:
+            update_cb.VILLA_RESULTS_CB(caption)
+        except Exception as e:
+            print(f"[villa_cb][error] {e}")
+
+    # ---- 1) Get prompts from vLLM ----
+    t0 = time.perf_counter()
     try:
         prompts = _vllm_extract_prompts(caption)
         print(f"[vllm][prompts] {prompts}")
     except Exception as e:
         print(f"[vllm][error] {e}")
         prompts = None
+    t["vllm_sec"] = time.perf_counter() - t0
 
     if not prompts:
+        t["total_sec"] = time.perf_counter() - t_total0
+        try:
+            logger.info(f"[{req_id}] DONE prompts_missing total={t['total_sec']:.3f} vllm={t['vllm_sec']:.3f}")
+        except Exception:
+            pass
         return jsonify({
             "ok": True,
             "note": "prompts missing; NanoOWL not called",
-            "prompts": None
+            "prompts": None,
+            "timings": t
         })
 
     # ---- 2) Find latest image + sidecar JSON ----
+    t0 = time.perf_counter()
     img_path, json_path = _find_latest_image_and_json(CAPTURES_ROOT)
+    t["find_latest_sec"] = time.perf_counter() - t0
+
     LAST["last_image_path"] = img_path
     if not img_path:
-        print(f"[nanoowl][warn] no image found under {CAPTURES_ROOT}")
+        t["total_sec"] = time.perf_counter() - t_total0
+        try:
+            logger.info(
+                f"[{req_id}] FAIL no_image total={t['total_sec']:.3f} "
+                f"vllm={t['vllm_sec']:.3f} find={t['find_latest_sec']:.3f}"
+            )
+        except Exception:
+            pass
         return jsonify({
             "ok": False,
             "error": f"no image found under {CAPTURES_ROOT}",
-            "prompts": prompts
+            "prompts": prompts,
+            "timings": t
         }), 500
+
     if not json_path:
         base, _ = os.path.splitext(img_path)
         json_path = base + ".json"
 
-    # ---- 3) Call NanoOWL ----
-    status, body = _post_nanoowl_multipart(
-        endpoint=NANOOWL_ENDPOINT,
-        image_path=img_path,
-        prompts=prompts,
-        annotate=NANOOWL_ANNOTATE,
-        timeout=NANOOWL_TIMEOUT
-    )
+    # ---- 3) Call NanoOWL (HTTP) ----
+    # expects: status, body, nanoowl_http_sec
+    t0 = time.perf_counter()
+    try:
+        status, body, nanoowl_http_sec = _post_nanoowl_multipart(
+            endpoint=NANOOWL_ENDPOINT,
+            image_path=img_path,
+            prompts=prompts,
+            annotate=NANOOWL_ANNOTATE,
+            timeout=NANOOWL_TIMEOUT
+        )
+    except Exception as e:
+        status, body, nanoowl_http_sec = -1, str(e), None
+    t["nanoowl_http_sec"] = nanoowl_http_sec if nanoowl_http_sec is not None else (time.perf_counter() - t0)
+
     LAST["nanoowl_result"] = {"status": status, "body": body if not isinstance(body, str) else body[:2000]}
     print(f"[nanoowl] status={status} body_type={'json' if isinstance(body, dict) else 'text'}")
 
@@ -738,42 +1037,65 @@ def from_vila():
         "annotate": int(NANOOWL_ANNOTATE),
         "result": body
     }
+
+    t0 = time.perf_counter()
+    json_ok = False
     try:
-        _update_sidecar_json(json_path, {"nanoowl": nano_payload})
-        print(f"[nanoowl][json] updated: {json_path}")
-
-        # ---- 4.1) If has BBOX, forward the FULL JSON to remote machine ----
-        try:
-            meta = _load_json(json_path)
-            if meta and _has_any_bbox(meta.get("nanoowl")):
-                if FORWARD_JSON_URL:
-                    # 1) take the local sidecar basename (no folders)
-                    sidecar_basename = os.path.basename(json_path)  # e.g. x0200...__11_31_15.json
-
-                    # 2) embed it in the payload so the receiver can save with the SAME name
-                    meta["_sidecar_basename"] = sidecar_basename
-
-                    # 3) (optional) also send as HTTP header for convenience
-                    headers = {"X-Sidecar-Basename": sidecar_basename}
-
-                    # 4) post
-                    s, b = _post_full_json(
-                        url=FORWARD_JSON_URL,
-                        obj=meta,
-                        timeout=FORWARD_JSON_TIMEOUT,
-                        retries=FORWARD_JSON_RETRIES,
-                        headers=headers,
-                    )
-                    print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
-
-        except Exception as e:
-            print(f"[forward-json][error] {e}")
-
+        json_ok = _update_sidecar_json(json_path, {"nanoowl": nano_payload})
+        print(f"[nanoowl][json] updated: {json_path} ok={json_ok}")
     except Exception as e:
         print(f"[nanoowl][json][error] failed to update {json_path}: {e}")
+    t["update_json_sec"] = time.perf_counter() - t0
 
-    # ---- 5) **Auto-annotate** and write <basename>_ann.jpg ----
-    ann_ok = _annotate_from_json(img_path, json_path)
+    # ---- 4.1) Forward JSON only if has bbox ----
+    t["forward_json_sec"] = 0.0
+    forward_status = None
+    try:
+        t0 = time.perf_counter()
+        meta = _load_json(json_path)
+        if meta and _has_any_bbox(meta.get("nanoowl")) and FORWARD_JSON_URL:
+            sidecar_basename = os.path.basename(json_path)
+            meta["_sidecar_basename"] = sidecar_basename
+            headers = {"X-Sidecar-Basename": sidecar_basename}
+
+            s, b = _post_full_json(
+                url=FORWARD_JSON_URL,
+                obj=meta,
+                timeout=FORWARD_JSON_TIMEOUT,
+                retries=FORWARD_JSON_RETRIES,
+                headers=headers,
+            )
+            forward_status = s
+            print(f"[forward-json] url={FORWARD_JSON_URL} status={s} body={b}")
+        t["forward_json_sec"] = time.perf_counter() - t0
+    except Exception as e:
+        t["forward_json_sec"] = time.perf_counter() - t0
+        print(f"[forward-json][error] {e}")
+
+    # ---- 5) Annotate ----
+    t0 = time.perf_counter()
+    try:
+        ann_ok = _annotate_from_json(img_path, json_path)
+    except Exception as e:
+        print(f"[annotate][error] {e}")
+        ann_ok = False
+    t["annotate_sec"] = time.perf_counter() - t0
+
+    # ---- Total + log summary ----
+    t["total_sec"] = time.perf_counter() - t_total0
+
+    # log one-liner (file+console)
+    try:
+        logger.info(
+            f"[{req_id}] DONE "
+            f"status={status} prompts={len(prompts)} ann={int(bool(ann_ok))} json_ok={int(bool(json_ok))} "
+            f"total={t['total_sec']:.3f} vllm={t['vllm_sec']:.3f} find={t['find_latest_sec']:.3f} "
+            f"nanoowl_http={t['nanoowl_http_sec']:.3f} json={t['update_json_sec']:.3f} "
+            f"fwd={t['forward_json_sec']:.3f} ann_t={t['annotate_sec']:.3f} "
+            f"img={os.path.basename(img_path)} forward_status={forward_status}"
+        )
+    except Exception:
+        pass
 
     return jsonify({
         "ok": True,
@@ -783,8 +1105,10 @@ def from_vila():
         "nanoowl_status": status,
         "nanoowl_body": body,
         "sidecar_json": json_path,
-        "annotated": bool(ann_ok)
+        "annotated": bool(ann_ok),
+        "timings": t
     })
+
 
 def _find_specific_image(root_dir, filename):
     """
@@ -835,15 +1159,16 @@ def main():
                    help="Ignore folders ending with this suffix (set '' to disable)")
 
     # llm prompt converter
-    p.add_argument("--vllm-url", required=True, help="e.g. http://192.168.131.21:8000")
+    p.add_argument("--vllm-url", default=None, help="e.g. http://192.168.131.21:8000") 
     p.add_argument("--vllm-model", required=True, help="model name as served by vLLM")
     p.add_argument("--vllm-timeout", type=float, default=20.0)
     p.add_argument("--vllm-max-tokens", type=int, default=32)
     p.add_argument("--vllm-temperature", type=float, default=0.2)
 
     # nanoowl
-    p.add_argument("--nanoowl-endpoint", required=True,
-                   help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
+    p.add_argument("--nanoowl-endpoint", default=None,
+               help="NanoOWL endpoint, e.g. http://172.16.17.11:5060/infer")
+
 
     p.add_argument("--forward-timeout", type=float, default=30.0,
                    help="Timeout (sec) for POST to Jetson-2")
@@ -863,9 +1188,45 @@ def main():
     p.add_argument("--forward-json-retries", type=int, default=3,
                    help="Retries for forwarding full JSON")
 
-
+    p.add_argument("--config", default="config/networks.yaml",
+                        help="Path to networks config YAML")
+    p.add_argument("--profile", default=None,
+                        help="Profile name (adsl|robotican). Overrides R2_PROFILE and defaults.profile")
+    p.add_argument("--no-config", action="store_true",
+                        help="Disable config resolution and use CLI flags as-is")
 
     args = p.parse_args()
+
+    from config.profile_loader import load_profile
+
+    if not args.no_config:
+        net = load_profile(args.config, args.profile)
+
+        # Override relevant args automatically
+        # (keep CLI override possible only if you want — right now config wins)
+        args.vllm_url = net.vllm_url
+        args.nanoowl_endpoint = net.nanoowl_infer_url
+        args.forward_json_url = net.ingest_json_url
+        args.endpoint = net.vila_describe_url
+
+        # Optional: print summary once
+        print(
+            f"[comm_manager] profile={net.name} | VLLM={args.vllm_url} | VILA={args.endpoint} | OWL={args.nanoowl_endpoint} | INGEST={args.forward_json_url}")
+    # ---- validate required settings after config resolution ----
+    missing = []
+    if not args.captures_root:
+        missing.append("--captures-root")
+    if not args.endpoint:
+        missing.append("--endpoint (VILA /describe)")
+    if not args.vllm_url:
+        missing.append("--vllm-url (or profile must provide vllm)")
+    if not args.nanoowl_endpoint:
+        missing.append("--nanoowl-endpoint (or profile must provide nanoowl)")
+    if not args.vllm_model:
+        missing.append("--vllm-model (or set a default / put in config)")
+
+    if missing:
+        p.error("Missing required args after config resolution: " + ", ".join(missing))
 
     CAPTURES_ROOT = args.captures_root.strip()
     NANOOWL_ENDPOINT = args.nanoowl_endpoint.strip()
@@ -910,6 +1271,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

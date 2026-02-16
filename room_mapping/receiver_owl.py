@@ -1,10 +1,14 @@
+#!/usr/bin/env python3
 # receiver_owl.py
 from flask import Flask, request, jsonify
 import os, json, time
 from werkzeug.utils import secure_filename
+from house_config import get_config
+
+cfg = get_config()
 
 app = Flask(__name__)
-OUT_DIR = "./ingest_out"
+OUT_DIR = cfg.ingest_out_dir
 os.makedirs(OUT_DIR, exist_ok=True)
 
 @app.route("/ingest", methods=["POST"])
@@ -19,22 +23,21 @@ def ingest():
         except Exception as e:
             return jsonify({"error": f"bad meta json: {e}"}), 400
 
-        # file = request.files.get("image")
-        # if file is None:
-        #     return jsonify({"error": "missing file part 'image'"}), 400
-
         # 2) Derive a stem for saving outputs
-        # Prefer the original image’s stem if present; else timestamp.
         stem = None
         try:
             stem = os.path.splitext(os.path.basename(meta["image"]["path"]))[0]
         except Exception:
             stem = f"frame_{int(time.time())}"
 
-        # # 3) Save annotated image
-        # jpg_name = secure_filename(f"{stem}_ann.jpg")
-        # jpg_path = os.path.join(OUT_DIR, jpg_name)
-        # file.save(jpg_path)
+        # 3) In single-image mode, clear old files before saving new one
+        if not cfg.accumulate_mode:
+            for old_file in os.listdir(OUT_DIR):
+                old_path = os.path.join(OUT_DIR, old_file)
+                try:
+                    os.remove(old_path)
+                except Exception:
+                    pass
 
         # 4) Save meta JSON (pretty)
         json_name = secure_filename(f"{stem}_dets.json")
@@ -46,9 +49,10 @@ def ingest():
         return jsonify({"ok": True, "stem": stem}), 200
 
     except Exception as e:
-        # Never crash—log and return error
         app.logger.exception("ingest error")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=9090, debug=False)
+    mode_str = "ACCUMULATE (keep all)" if cfg.accumulate_mode else "SINGLE-IMAGE (clear on new)"
+    print(f"Receiver OWL | Mode: {mode_str}")
+    app.run(host=cfg.receiver_host, port=cfg.receiver_port, debug=False)

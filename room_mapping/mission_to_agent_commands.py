@@ -11,10 +11,9 @@ import json
 import time
 import sys
 from pathlib import Path
+from house_config import get_config
 
-# File paths for mission exchange
-MISSION_FILE = "current_mission.txt"
-AGENT_COMMANDS_FILE = "agent_commands.txt"
+cfg = get_config()
 
 PROMPT = """You are a drone controller that converts navigation missions into step-by-step agent commands.
 
@@ -87,7 +86,7 @@ Generate ONLY the numbered steps:"""
 def load_house_data():
     """Load and process house data with room positions"""
     try:
-        with open("data/unified_rooms.json", 'r') as f:
+        with open(cfg.unified_rooms_json, 'r') as f:
             house_data = json.load(f)
 
         # Create a more detailed summary for the LLM
@@ -108,8 +107,7 @@ def load_house_data():
 
         return simplified
     except Exception as e:
-        print(f"Warning: Could not load unified_rooms.json: {e}")
-        # Return empty structure if file doesn't exist
+        print(f"Warning: Could not load {cfg.unified_rooms_json}: {e}")
         return {"rooms": {}}
 
 
@@ -126,14 +124,10 @@ def ask_ollama(house_json, mission_instruction):
         temp_file = f.name
 
     try:
-        # Send file content to Ollama
-        cmd = f"cat {temp_file} | ollama run llama3.2:3b"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        cmd = f"cat {temp_file} | ollama run {cfg.agent_model}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=cfg.timeout)
         response = result.stdout.strip()
-
-        # Clean up temp file
         os.unlink(temp_file)
-
         return response
     except Exception as e:
         if os.path.exists(temp_file):
@@ -146,6 +140,7 @@ def monitor_missions():
     print("=" * 70)
     print("MISSION TO AGENT COMMAND MONITOR")
     print("Watching for missions from web server...")
+    print(f"LLM model: {cfg.agent_model}")
     print("=" * 70)
 
     last_mission = None
@@ -154,15 +149,15 @@ def monitor_missions():
     while True:
         try:
             # Check if mission file exists and has changed
-            if os.path.exists(MISSION_FILE):
-                current_modified = os.path.getmtime(MISSION_FILE)
+            if os.path.exists(cfg.mission_file):
+                current_modified = os.path.getmtime(cfg.mission_file)
 
                 if current_modified > last_modified:
                     # Small delay to ensure file is fully written
                     time.sleep(0.2)
 
                     # Read the new mission
-                    with open(MISSION_FILE, 'r') as f:
+                    with open(cfg.mission_file, 'r') as f:
                         mission = f.read().strip()
 
                     if mission and mission != last_mission:
@@ -170,10 +165,6 @@ def monitor_missions():
                         print("-" * 70)
                         print("Mission:", mission[:200] + "..." if len(mission) > 200 else mission)
                         print("-" * 70)
-
-                        # Clear old agent commands immediately
-                        # if os.path.exists(AGENT_COMMANDS_FILE):
-                            # os.remove(AGENT_COMMANDS_FILE)
 
                         # Load current house data
                         house_data = load_house_data()
@@ -185,24 +176,23 @@ def monitor_missions():
                         house_json = json.dumps(house_data, indent=2)
 
                         # Generate agent commands
-                        print("🤖 Generating agent commands...")
+                        print("Generating agent commands...")
                         agent_commands = ask_ollama(house_json, mission)
 
                         # Save agent commands to file
-                        with open(AGENT_COMMANDS_FILE, 'w') as f:
+                        with open(cfg.agent_commands_file, 'w') as f:
                             f.write(agent_commands)
 
                         print("\n Agent Execution Plan:")
                         print("=" * 70)
                         print(agent_commands)
                         print("=" * 70)
-                        print(f"✓ Commands saved to {AGENT_COMMANDS_FILE}")
+                        print(f"Commands saved to {cfg.agent_commands_file}")
 
                         last_mission = mission
                         last_modified = current_modified
 
-            # Check every 0.5 seconds
-            time.sleep(0.5)
+            time.sleep(cfg.llm_poll_interval)
 
         except KeyboardInterrupt:
             print("\n\nShutting down monitor...")
@@ -214,14 +204,14 @@ def monitor_missions():
 
 def main():
     # Clean up any old files at startup
-    for file in [AGENT_COMMANDS_FILE, MISSION_FILE]:
+    for file in [cfg.agent_commands_file, cfg.mission_file]:
         if os.path.exists(file):
             os.remove(file)
             print(f" Cleaned old {file}")
 
     # Check if unified_rooms.json exists
-    if not os.path.exists("data/unified_rooms.json"):
-        print(" Warning: unified_rooms.json not found.")
+    if not os.path.exists(cfg.unified_rooms_json):
+        print(f" Warning: {cfg.unified_rooms_json} not found.")
         print("  The agent planner will work but without room awareness.")
         print("  Run pixel_room_mapper.py first for best results.")
         print()

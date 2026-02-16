@@ -8,6 +8,7 @@ profiles:
       comm_manager:   { host: "agx1", port: 5050 }
       vila_api:       { host: "agx1", port: 8080 }
       nanoowl:        { host: "agx1", port: 5060 }
+      depth:          { host: "agx1", port: 5070 }
       display_server: { host: "agx1", port: 8090 }
       vllm:           { host: "nano", port: 8000 }
       ingest_json:    { host: "agx2", port: 9090 }   # /ingest
@@ -21,6 +22,7 @@ profiles:
       comm_manager:   { host: "agx1", port: 5050 }
       vila_api:       { host: "agx1", port: 8080 }
       nanoowl:        { host: "agx1", port: 5060 }
+      depth:          { host: "agx1", port: 5070 }
       display_server: { host: "agx1", port: 8090 }
       vllm:           { host: "nano", port: 8000 }
       ingest_json:    { host: "agx2", port: 9090 }
