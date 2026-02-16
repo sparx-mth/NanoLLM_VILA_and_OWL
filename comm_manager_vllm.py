@@ -563,8 +563,10 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
 
             img_url = _to_image_url(image_path)
 
+            # "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+
             payload = {
-                "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+                "model": "/app/model",  # or pass via args if you want later
                 "messages": [{
                     "role": "user",
                     "content": [

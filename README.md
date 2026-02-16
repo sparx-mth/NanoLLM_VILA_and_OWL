@@ -3,33 +3,29 @@
 
 ## 1. ** VLLM WITH QWEN:**
 
+
 first- get in to the jetson:
 ```
 ssh -X user@192.168.131.22
 ```
-
 in terminal 1:
+
 ```bash
-docker run --rm -it \
+ docker run --rm -it \
   --runtime nvidia \
   --network host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -v ~/my_models/qwen3-vl-4b:/app/model \
+  -e HF_HUB_OFFLINE=1 \
+  -e TRANSFORMERS_OFFLINE=1 \
   vllm_qwen3_vl_4b_instruct_aws_4bit:latest
 ```
-
-
-Inside the container, start the vLLM API server:
-
 ```
-vllm serve cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit \
+vllm serve /app/model \
   --host 0.0.0.0 \
   --port 8080 \
   --dtype float16 \
   --gpu-memory-utilization 0.5 \
   --max-model-len 2048 \
-  --max-num-batched-tokens 128 \
-  --max-num-seqs 4 \
-  --swap-space 0 \
   --enforce-eager
 ```
 
