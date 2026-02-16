@@ -272,8 +272,10 @@ def _vllm_extract_prompts(sentence: str) -> list[str]:
 
     sentence = re.sub(r"</s>\s*$", "", sentence.strip())
 
+        # "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+
     payload = {
-        "model": VLLM_MODEL,
+        "model": "/app/model",  # or pass via args if you want later
         "messages": [{"role": "user", "content": VLLM_PROMPT_PREFIX + sentence}],
         "max_tokens": int(VLLM_MAX_TOKENS),
         "temperature": float(VLLM_TEMPERATURE),
