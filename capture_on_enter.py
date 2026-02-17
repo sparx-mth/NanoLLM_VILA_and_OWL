@@ -193,12 +193,15 @@ def main():
         with HeadlessKeys() as k:
             while running:
                 key = k.getch()
-                if key:
-                    if key in [' ', 'c', '\n', '\r']: capture_image()
-                    elif key == 'q':
-                        print("\nQuitting...")
-                        running = False
-                        break
+                if key in [' ', 'c', '\n', '\r']:
+                    capture_image()
+                    print("\n[Capture] Done. Exiting...")
+                    running = False
+                    break
+                elif key == 'q':
+                    print("\nQuitting...")
+                    running = False
+                    break
                 time.sleep(0.01)
     except KeyboardInterrupt: print("\nInterrupted.")
     finally: running = False; t.join()
