@@ -16,42 +16,49 @@ def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def run_ssh_interactively(cmd_string, title):
-    """Used for Capture: Needs full keyboard passthrough."""
-    print(f"\n--- Launching {title} ---")
-    full_cmd = f"export TERM=xterm-256color && cd {REMOTE_PATH} && {cmd_string}"
-    ssh_call = ["sshpass", "-p", JETSON_PASS, "ssh", "-t", "-t", f"{JETSON_USER}@{JETSON_HOST}", full_cmd]
-    subprocess.call(ssh_call)
-
-
 def run_comm_manager_auto(cmd_string):
-    """
-    Used for Comm Manager: Monitors output and auto-exits
-    when it sees the processing is finished.
-    """
-    print(f"\n--- Launching Comm Manager (Auto-Exit Enabled) ---")
+    print(f"\n--- Launching Comm Manager (Run-Once) ---")
     full_cmd = f"cd {REMOTE_PATH} && {cmd_string}"
+    ssh_call = [
+        "sshpass", "-p", JETSON_PASS,
+        "ssh", "-o", "StrictHostKeyChecking=no",
+        f"{JETSON_USER}@{JETSON_HOST}",
+        full_cmd
+    ]
 
-    # We use Popen to read the output stream line-by-line
-    ssh_call = ["sshpass", "-p", JETSON_PASS, "ssh", f"{JETSON_USER}@{JETSON_HOST}", full_cmd]
+    process = subprocess.Popen(
+        ssh_call,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
 
-    process = subprocess.Popen(ssh_call, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    summary_line = None
 
     try:
         for line in process.stdout:
-            print(line, end='')  # Print Jetson output to our screen
+            print(line, end='')
 
-            # The Magic Trigger:
-            if "summary: done=4" in line:
-                print("\n[TUI] Detected processing finish! Sending Shutdown...")
-                # Send Ctrl+C to the remote process
-                process.send_signal(signal.SIGINT)
-                break
+            # Detect completion summary from comm_manager
+            if "[worker] summary:" in line:
+                summary_line = line.strip()
+                # Nice, short UI message for exhibition
+                print("\n✅ Processing finished:", summary_line)
+
     except KeyboardInterrupt:
+        # If you stop the TUI, try to stop the remote process too
         process.send_signal(signal.SIGINT)
 
-    process.wait()
-    print("\n[TUI] Comm Manager Closed. Returning to menu...")
+    rc = process.wait()
+
+    if summary_line is None:
+        print("\n⚠️ Comm Manager exited without summary line.")
+    else:
+        print("\n[TUI] Ready for another run.")
+
+    return rc, summary_line
+
+
 
 def cleanup_remote_port(port):
     """Force kills any process on a specific port on the Jetson."""
@@ -61,50 +68,51 @@ def cleanup_remote_port(port):
     # Use call to wait for it to finish
     subprocess.call(ssh_call, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+def run_ssh(cmd_string, title):
+    print(f"\n--- Launching {title} ---")
+    full_cmd = f"cd {REMOTE_PATH} && {cmd_string}"
+    ssh_call = ["sshpass", "-p", JETSON_PASS, "ssh", "-o", "StrictHostKeyChecking=no",
+                f"{JETSON_USER}@{JETSON_HOST}", full_cmd]
+    return subprocess.call(ssh_call)
+
+
 def main():
+    cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 1 --cols 1 --capture-now"
+
+    comm_cmd = (
+        f"python3 comm_manager_vllm.py --profile robotican "
+        f"--vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 "
+        f"--captures-root {CAPTURES_ROOT} --endpoint http://192.168.131.22:8080 "
+        f"--host 192.168.131.22 --force --depth-endpoint http://192.168.131.22:5070/bbox_depth "
+        f"--run-once"
+    )
+
     while True:
         clear()
         print("==========================================================")
-        print(f"   JETSON REMOTE MANAGER | {JETSON_USER}@{JETSON_HOST}")
+        print(f"   JETSON ONE-CLICK PIPELINE | {JETSON_USER}@{JETSON_HOST}")
         print("==========================================================")
-        print("1) [CAPTURE] Take 4K Images (Manual exit with 'q')")
-        print("2) [COMM]    Run Comm Manager (Auto-exits when done)")
-        print("3) [AUTO]    Full Pipeline (Zero-Touch)")
-        print("q) Quit")
+        print("Press [ENTER] to CAPTURE + PROCESS")
+        print("Type  q  then ENTER to quit")
         print("----------------------------------------------------------")
 
-        choice = input("Select an option: ").strip().lower()
+        choice = input("> ").strip().lower()
+        if choice == "q":
+            sys.exit(0)
 
-        comm_cmd = (
-            f"python3 comm_manager_vllm.py --profile robotican "
-            f"--vllm-model espressor/meta-llama.Llama-3.2-3B-Instruct_W4A16 "
-            f"--captures-root {CAPTURES_ROOT} --endpoint http://192.168.131.22:8080 "
-            f"--host 192.168.131.22 --force --depth-endpoint http://192.168.131.22:5070/bbox_depth"
-        )
+        # Stage 1: Capture
+        rc = run_ssh(cap_cmd, "Stage 1: Capture (one-shot)")
+        if rc != 0:
+            print("\n[TUI] Capture failed. Press Enter to retry...")
+            input()
+            continue
 
-        if choice == '1':
-            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 1 --cols 1"
-            run_ssh_interactively(cap_cmd, "Image Capture")
-            input("\nPress Enter to return to menu...")
+        # Stage 2: Process
+        run_comm_manager_auto(comm_cmd)
 
-        elif choice == '2':
-            cleanup_remote_port(5050)  # Kill old Comm Manager
-            run_comm_manager_auto(comm_cmd)
-            time.sleep(2)
+        print("\n✅ Ready for another run.")
+        time.sleep(2)
 
-        elif choice == '3':
-            # Stage 1: Capture
-            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 1 --cols 1"
-            run_ssh_interactively(cap_cmd, "Stage 1: Capture")
-
-            # Stage 2: Process (Now with Auto-Exit)
-            print("\nMoving to Stage 2: Automatic Inference...")
-            cleanup_remote_port(5050)  # Kill old Comm Manager
-            run_comm_manager_auto(comm_cmd)
-            input("\nPipeline Finished. Press Enter...")
-
-        elif choice == 'q':
-            sys.exit()
 
 
 if __name__ == "__main__":

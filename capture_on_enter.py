@@ -171,6 +171,9 @@ def main():
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Target tile width (resized)")
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Target tile height (resized)")
     parser.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Overlap fraction (0.0 - 0.5)")
+    parser.add_argument("--capture-now", action="store_true",
+                    help="Capture one frame immediately after warmup, then exit")
+
     
     args = parser.parse_args()
     
@@ -180,7 +183,14 @@ def main():
     # Start Camera
     t = threading.Thread(target=camera_stream_thread, daemon=True)
     t.start()
-    time.sleep(1.0)
+    time.sleep(1.5)
+
+    if args.capture_now:
+        capture_image()
+        print("\n[Capture] Done (capture-now). Exiting...")
+        running = False
+        t.join()
+        return
 
     print("\n" + "="*50)
     print(f" CAPTURE TOOL | {args.rows}x{args.cols} Grid | {int(args.overlap*100)}% Overlap")

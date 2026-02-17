@@ -939,6 +939,10 @@ def main():
                         help="Profile name (adsl|robotican). Overrides R2_PROFILE and defaults.profile")
     p.add_argument("--no-config", action="store_true",
                         help="Disable config resolution and use CLI flags as-is")
+    
+    p.add_argument("--run-once", action="store_true",
+               help="Process latest capture folder once and exit (no Flask server)")
+
 
     args = p.parse_args()
 
@@ -994,22 +998,29 @@ def main():
     print(f"[comm_manager] listening on {args.host}:{args.port}")
     print(f"  captures_root    = {CAPTURES_ROOT}")
     print(f"  nanoowl_endpoint = {NANOOWL_ENDPOINT} (annotate={NANOOWL_ANNOTATE})")
-    # Start the folder processing loop in a background thread
-    worker_thread = threading.Thread(target=run_process_once, args=(args,), daemon=True)
-    worker_thread.start()
 
-    def handle_shutdown(signum, frame):
-        log(f"[Main] Shutdown signal ({signum}) received. Releasing worker...")
-        shutdown_event.set()
-        sys.exit(0)
+    try:
+        run_process_once(args)
+    finally:
+        return
 
 
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
+    # # Start the folder processing loop in a background thread
+    # worker_thread = threading.Thread(target=run_process_once, args=(args,), daemon=True)
+    # worker_thread.start()
+
+    # def handle_shutdown(signum, frame):
+    #     log(f"[Main] Shutdown signal ({signum}) received. Releasing worker...")
+    #     shutdown_event.set()
+    #     sys.exit(0)
 
 
-    app.run(host=args.host, port=args.port)
-    run_process_once(args)
+    # signal.signal(signal.SIGINT, handle_shutdown)
+    # signal.signal(signal.SIGTERM, handle_shutdown)
+
+
+    # app.run(host=args.host, port=args.port)
+    # run_process_once(args)
 
 
 
