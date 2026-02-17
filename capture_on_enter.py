@@ -12,11 +12,11 @@ from pathlib import Path
 
 # --- Default Configuration ---
 DEFAULT_ROOT_DIR = "/home/user/jetson-containers/data/R1/"
-DEFAULT_ROWS = 2
-DEFAULT_COLS = 2
+DEFAULT_ROWS = 1
+DEFAULT_COLS = 1
 DEFAULT_WIDTH = 0
 DEFAULT_HEIGHT = 0
-DEFAULT_OVERLAP = 0.1  # 10%
+DEFAULT_OVERLAP = 0.0  
 
 # Global variables
 session_folder_path = None
