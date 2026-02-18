@@ -9,6 +9,9 @@ Grid coords:  origin = top-left (NW),  +X = east,  +Y = south.
   West(x=0)        East(x=W)
     │                  │
     └── South (y=H) ──┘
+
+CHANGED: Each object occupies exactly ONE cell at its center of gravity.
+         No size-based footprint — minimal overlaps on the 2D map.
 """
 
 import numpy as np, json, math, os, glob, time, hashlib
@@ -224,7 +227,6 @@ class PixelRoomMapper:
 
         self.tiles = DynamicTileManager(existing_registry)
         self.all_objects = []
-        self.duplicate_overlap_threshold = 0.5
 
     # ── Helpers ──
 
@@ -294,18 +296,12 @@ class PixelRoomMapper:
 
     # ── Duplicate detection ──
 
-    @staticmethod
-    def _cells(bbox):
-        x1, y1, x2, y2 = bbox if isinstance(bbox, (list, tuple)) else bbox["bbox"]
-        return {(x, y) for y in range(y1, y2) for x in range(x1, x2)}
-
-    def _is_duplicate(self, obj_class, new_cells):
+    def _is_duplicate(self, obj_class, gx, gy):
+        """Check if an object of the same class already occupies this cell."""
         for ex in self.all_objects:
             if ex["type"] == obj_class:
-                ec = self._cells(ex["bbox"])
-                shared = new_cells & ec
-                smaller = min(len(new_cells), len(ec))
-                if smaller > 0 and len(shared) / smaller >= self.duplicate_overlap_threshold:
+                ex_gx, ex_gy = ex["grid_cell"]
+                if ex_gx == gx and ex_gy == gy:
                     return True
         return False
 
@@ -334,34 +330,33 @@ class PixelRoomMapper:
             max_depth = det.get("max_depth_col_m")
             tile_type = self.tiles.get_tile_type(obj_class)
             ox, oy = self.calculate_position(bbox, yaw, fw, depth_m, intrinsics, max_depth)
+
+            # Still estimate size for metadata, but do NOT use it for grid footprint
             wm, hm = self.estimate_object_size(bbox, fw, fh, depth_m, intrinsics)
 
-            margin = 0.05
-            ox = max(margin + wm / 2, min(self.room_width_m - margin - wm / 2, ox))
-            oy = max(margin + hm / 2, min(self.room_height_m - margin - hm / 2, oy))
-
+            # ── SINGLE CELL at center of gravity ──
             gx, gy = self.meters_to_grid(ox, oy)
-            wc, hc = max(1, int(wm / self.res_x)), max(1, int(hm / self.res_y))
-            if abs(math.sin(yaw)) > abs(math.cos(yaw)):
-                wc, hc = hc, wc
 
-            x1, y1 = gx - wc // 2, gy - hc // 2
-            x2, y2 = x1 + wc, y1 + hc
+            # Offset for existing_map mode
             if self.mode == "existing_map":
-                bx, by = self.room_bbox[0], self.room_bbox[1]
-                x1 += bx; y1 += by; x2 += bx; y2 += by
+                gx += self.room_bbox[0]
+                gy += self.room_bbox[1]
 
-            cells = self._cells([x1, y1, x2, y2])
-            if self._is_duplicate(obj_class, cells):
-                print(f"  Skip duplicate: {obj_class}"); continue
+            # Duplicate check: same class on same cell
+            if self._is_duplicate(obj_class, gx, gy):
+                print(f"  Skip duplicate: {obj_class} at ({gx},{gy})")
+                continue
 
+            # Single-cell bbox: [x, y, x+1, y+1]
             self.all_objects.append({
                 "type": obj_class, "tile_type": tile_type,
-                "bbox": [x1, y1, x2, y2], "depth_m": depth_m,
+                "bbox": [gx, gy, gx + 1, gy + 1],
+                "grid_cell": (gx, gy),
+                "depth_m": depth_m,
                 "position_m": [round(ox, 3), round(oy, 3)],
                 "size_m": [round(wm, 3), round(hm, 3)]})
-            print(f"  Added: {obj_class} ({ox:.2f},{oy:.2f})m depth={depth_m:.2f}m "
-                  f"size=({wm:.2f}x{hm:.2f})m")
+            print(f"  Added: {obj_class} ({ox:.2f},{oy:.2f})m -> cell ({gx},{gy}) "
+                  f"depth={depth_m:.2f}m")
 
     # ── Grid Creation ──
 
@@ -385,16 +380,16 @@ class PixelRoomMapper:
         if 0 <= cx < self.map_width and 0 <= cy < self.map_height:
             grid[cy, cx] = T.CAMERA
 
+        # Place each object as a single cell
         for obj in self.all_objects:
-            x1, y1, x2, y2 = obj["bbox"]
+            gx, gy = obj["grid_cell"]
             oc = obj["type"]
-            for y in range(y1, y2):
-                for x in range(x1, x2):
-                    if 0 < x < self.map_width - 1 and 0 < y < self.map_height - 1:
-                        t = grid[y, x]
-                        if t in (T.WALL, T.CAMERA, T.DOOR): continue
-                        grid[y, x] = T.get_overlap_tile_type(t, oc) if t != T.FREE_SPACE \
-                                     else T.get_tile_type(oc)
+            if 0 < gx < self.map_width - 1 and 0 < gy < self.map_height - 1:
+                t = grid[gy, gx]
+                if t in (T.WALL, T.CAMERA, T.DOOR):
+                    continue
+                grid[gy, gx] = T.get_overlap_tile_type(t, oc) if t != T.FREE_SPACE \
+                               else T.get_tile_type(oc)
         return grid
 
     # ── Save ──
@@ -650,10 +645,13 @@ def main():
 
     bbox_dir = os.path.join(BASE_PATH, "room_mapping", cfg.ingest_out_dir)
     last_count = -1
+    last_process_time = 0
+    FORCE_REFRESH_INTERVAL = 20  # seconds
     try:
         while True:
             files = glob.glob(os.path.join(bbox_dir, "*.json"))
-            if len(files) != last_count:
+            force_refresh = (time.time() - last_process_time) >= FORCE_REFRESH_INTERVAL
+            if len(files) != last_count or (force_refresh and files):
                 if files:
                     print(f"\n[{time.strftime('%H:%M:%S')}] {len(files)} file(s)")
                     n = process_files(
@@ -663,6 +661,7 @@ def main():
                         grid_resolution=grid_resolution, grid_cells=grid_cells,
                         room_width_m=room_width_m, room_height_m=room_height_m)
                     if n: print(f"Processed {n} files -> {cfg.unified_rooms_json} + {cfg.house_map_txt}")
+                    last_process_time = time.time()
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
                     if mode != "existing_map":

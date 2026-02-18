@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-render_house_dynamic.py - Dynamic Pygame House Renderer
+render_house_dynamic.py - Headless House Renderer
 
-Renders house with dynamic tiles loaded from the JSON file.
-Auto-reloads to show real-time updates.
-NOW SAVES IMAGES FOR WEB DISPLAY ONLY WHEN MAP CHANGES
-IMPROVED: Better text spacing for detected objects
-FIXED: Using predefined color scheme for consistency
+Renders house map to an image file (no Pygame window).
+Auto-reloads to show real-time updates via saved images.
+HEADLESS: Uses off-screen surface only — no display window.
 """
+
+import os
+# Force SDL to use a dummy video driver (no window)
+os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 import pygame
 import numpy as np
 import json
 import sys
-import os
 import re
 from house_config import get_config
 
@@ -21,7 +22,7 @@ cfg = get_config()
 
 
 class DynamicHouseRenderer:
-    """Pygame renderer with dynamic tile support."""
+    """Headless renderer — draws to an off-screen surface and saves to PNG."""
 
     def __init__(self, unified_json=None, map_txt=None, cell_size=None):
         """Initialize the renderer."""
@@ -60,24 +61,21 @@ class DynamicHouseRenderer:
         self.window_width = self.grid_width * self.cell_size + self.legend_width
         self.window_height = self.grid_height * self.cell_size
 
-        # Initialize pygame
+        # Initialize pygame in headless mode
         pygame.init()
-        self.screen = pygame.display.set_mode((self.window_width, self.window_height))
-        pygame.display.set_caption("Dynamic House Map")
-        self.clock = pygame.time.Clock()
+        # Create an off-screen surface instead of a display window
+        self.screen = pygame.Surface((self.window_width, self.window_height))
 
         # Multiple fonts for different purposes
         self.font_title = pygame.font.Font(None, 26)
         self.font_stats = pygame.font.Font(None, 22)
         self.font_objects = pygame.font.Font(None, 40)
 
-        # Auto-reload
-        self.last_reload = pygame.time.get_ticks()
-        self.reload_interval = cfg.reload_interval
-
         # CHANGE DETECTION - Track grid state
         self.last_grid_hash = None
         self.last_structure_hash = None
+        self.last_save_time = 0
+        self.FORCE_SAVE_INTERVAL = 20  # seconds — keep web fresh
 
     def load_tile_registry(self):
         """Load tile types and colors from JSON (single source of truth)."""
@@ -91,7 +89,7 @@ class DynamicHouseRenderer:
         self.tile_colors.setdefault(-1, (20, 20, 20))
 
     def save_map_image(self, filename=None):
-        """Save current pygame screen to file for web display"""
+        """Save current surface to file for web display."""
         filename = filename or cfg.current_map_png
         os.makedirs(os.path.dirname(filename) or '.', exist_ok=True)
         pygame.image.save(self.screen, filename)
@@ -117,7 +115,7 @@ class DynamicHouseRenderer:
         return ' '.join(formatted_words)
 
     def render(self):
-        """Render the grid."""
+        """Render the grid to the off-screen surface."""
         self.screen.fill((30, 30, 30))
 
         # Draw grid
@@ -133,17 +131,22 @@ class DynamicHouseRenderer:
 
         # Draw legend
         self.draw_legend()
-        pygame.display.flip()
 
-        # CHANGE DETECTION - Only save when grid or structure changes
+        # CHANGE DETECTION - Only save when grid or structure changes, or every 20s
+        import time as _time
         current_grid_hash = hash(self.grid.tobytes())
         current_structure_hash = hash(json.dumps(self.structure, sort_keys=True))
+        now = _time.time()
 
-        if (current_grid_hash != self.last_grid_hash or
-                current_structure_hash != self.last_structure_hash):
+        changed = (current_grid_hash != self.last_grid_hash or
+                   current_structure_hash != self.last_structure_hash)
+        force = (now - self.last_save_time) >= self.FORCE_SAVE_INTERVAL
+
+        if changed or force:
             self.save_map_image()
             self.last_grid_hash = current_grid_hash
             self.last_structure_hash = current_structure_hash
+            self.last_save_time = now
 
     def wrap_text(self, text, max_width, font=None):
         """Wrap text to fit within max_width pixels."""
@@ -233,7 +236,7 @@ class DynamicHouseRenderer:
                 self.grid_width, self.grid_height = new_w, new_h
                 self.window_width = self.grid_width * self.cell_size + self.legend_width
                 self.window_height = self.grid_height * self.cell_size
-                self.screen = pygame.display.set_mode((self.window_width, self.window_height))
+                self.screen = pygame.Surface((self.window_width, self.window_height))
 
             with open(cfg.unified_rooms_json, 'r') as f:
                 self.structure = json.load(f)
@@ -241,57 +244,34 @@ class DynamicHouseRenderer:
         except:
             pass
 
-    def check_auto_reload(self):
-        """Auto-reload check."""
-        current = pygame.time.get_ticks()
-        if current - self.last_reload > self.reload_interval:
-            self.reload()
-            self.last_reload = current
+    def render_once(self):
+        """Render a single frame and save. Use this for one-shot image generation."""
+        self.render()
+        print(f"Headless render complete -> {cfg.current_map_png}")
 
     def run(self):
-        """Main loop."""
-        print("Dynamic House Renderer - Fixed Color Scheme")
+        """Main loop — headless polling mode (no window)."""
+        import time
+
+        print("Headless House Renderer - No Display Window")
         print("-" * 60)
         print(f"Grid: {self.grid_width}x{self.grid_height}")
         print(f"Cell size: {self.cell_size}px")
         print(f"Legend width: {self.legend_width}px")
-        print(f"Object list font size: 32pt (bigger)")
-        print(f"Auto-reload: {self.reload_interval}ms")
-        print(f"Web save: Only when map changes (to {cfg.current_map_png})")
-        print("\nColors: Using predefined color scheme for consistency")
-        print("\nControls:")
-        print("  ESC - Exit")
-        print("  R   - Manual reload")
-        print("  +/- - Zoom")
+        print(f"Output: {cfg.current_map_png}")
+        print(f"Reload interval: {cfg.reload_interval}ms")
+        print("\nRunning headless (Ctrl+C to stop)...")
         print("-" * 60)
 
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_r:
-                        self.reload()
-                        print(f"Reloaded - {len(self.tile_registry)} tile types")
-                    elif event.key in [pygame.K_PLUS, pygame.K_EQUALS]:
-                        self.cell_size = min(50, self.cell_size + 2)
-                        self.window_width = self.grid_width * self.cell_size + self.legend_width
-                        self.window_height = self.grid_height * self.cell_size
-                        self.screen = pygame.display.set_mode((self.window_width, self.window_height))
-                    elif event.key == pygame.K_MINUS:
-                        self.cell_size = max(5, self.cell_size - 2)
-                        self.window_width = self.grid_width * self.cell_size + self.legend_width
-                        self.window_height = self.grid_height * self.cell_size
-                        self.screen = pygame.display.set_mode((self.window_width, self.window_height))
-
-            self.check_auto_reload()
-            self.render()
-            self.clock.tick(30)
-
-        pygame.quit()
+        try:
+            while True:
+                self.reload()
+                self.render()
+                time.sleep(cfg.reload_interval / 1000.0)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+        finally:
+            pygame.quit()
 
 
 if __name__ == "__main__":
