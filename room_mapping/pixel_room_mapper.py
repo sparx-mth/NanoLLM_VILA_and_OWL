@@ -227,6 +227,7 @@ class PixelRoomMapper:
 
         self.tiles = DynamicTileManager(existing_registry)
         self.all_objects = []
+        self.occupied_cells = {}  # (gx, gy) -> index in all_objects
 
     # ── Helpers ──
 
@@ -305,6 +306,93 @@ class PixelRoomMapper:
                     return True
         return False
 
+    # ── Collision resolution ──
+
+    def _cell_is_free(self, gx, gy):
+        """Check if a grid cell is available for placement."""
+        if gx <= 0 or gy <= 0 or gx >= self.map_width - 1 or gy >= self.map_height - 1:
+            return False  # wall / out of bounds
+        return (gx, gy) not in self.occupied_cells
+
+    def _resolve_collision(self, gx, gy, new_pos_m):
+        """Nudge a new object away from the existing occupant based on their
+        world-position difference.
+
+        Returns (final_gx, final_gy) or None if every nearby cell is taken.
+
+        Logic:
+          1. Compare world positions (metres) of new vs existing object.
+          2. Primary axis = the larger absolute difference (lateral vs depth).
+          3. Build an ordered list of candidate offsets: preferred direction on
+             primary axis first, then secondary axis, then opposites, then
+             diagonals.
+          4. Return the first candidate that is free.
+          5. If all 12 neighbours (ring-1 + ring-2 cardinal) are taken, spiral
+             outward up to radius 3.
+        """
+        existing_idx = self.occupied_cells[(gx, gy)]
+        existing_obj = self.all_objects[existing_idx]
+        ex_pos = existing_obj["position_m"]
+
+        dx_m = new_pos_m[0] - ex_pos[0]   # positive = new is to the right
+        dy_m = new_pos_m[1] - ex_pos[1]   # positive = new is further south
+
+        # Determine preferred direction per axis
+        sx = 1 if dx_m >= 0 else -1   # horizontal nudge sign
+        sy = 1 if dy_m >= 0 else -1   # vertical nudge sign
+
+        # Primary axis = larger absolute difference
+        if abs(dx_m) >= abs(dy_m):
+            # lateral difference dominates → try X first
+            candidates = [
+                (sx, 0),       # primary preferred
+                (0, sy),       # secondary preferred
+                (-sx, 0),      # primary opposite
+                (0, -sy),      # secondary opposite
+                (sx, sy),      # diagonal preferred
+                (sx, -sy),
+                (-sx, sy),
+                (-sx, -sy),    # diagonal opposite
+            ]
+        else:
+            # depth difference dominates → try Y first
+            candidates = [
+                (0, sy),       # primary preferred
+                (sx, 0),       # secondary preferred
+                (0, -sy),      # primary opposite
+                (-sx, 0),      # secondary opposite
+                (sx, sy),      # diagonal preferred
+                (sx, -sy),
+                (-sx, sy),
+                (-sx, -sy),
+            ]
+
+        # De-duplicate candidate list (preserve order)
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+
+        # Try ring-1
+        for cdx, cdy in unique:
+            nx, ny = gx + cdx, gy + cdy
+            if self._cell_is_free(nx, ny):
+                return (nx, ny)
+
+        # Try ring-2 and ring-3 (spiral outward)
+        for radius in range(2, 4):
+            for cdx in range(-radius, radius + 1):
+                for cdy in range(-radius, radius + 1):
+                    if abs(cdx) < radius and abs(cdy) < radius:
+                        continue  # skip inner cells already tried
+                    nx, ny = gx + cdx, gy + cdy
+                    if self._cell_is_free(nx, ny):
+                        return (nx, ny)
+
+        return None  # extremely congested — give up
+
     # ── Scan Ingestion ──
 
     def add_scan(self, scan_data: Dict, yaw: float = 0.0):
@@ -347,6 +435,20 @@ class PixelRoomMapper:
                 print(f"  Skip duplicate: {obj_class} at ({gx},{gy})")
                 continue
 
+            # ── Collision resolution: nudge if cell is occupied ──
+            if (gx, gy) in self.occupied_cells:
+                resolved = self._resolve_collision(gx, gy, [ox, oy])
+                if resolved is None:
+                    print(f"  Skip congested: {obj_class} at ({gx},{gy}) — no free neighbour")
+                    continue
+                old_gx, old_gy = gx, gy
+                gx, gy = resolved
+                print(f"  Nudged: {obj_class} ({old_gx},{old_gy})->({gx},{gy})")
+
+            # Register the cell
+            obj_idx = len(self.all_objects)
+            self.occupied_cells[(gx, gy)] = obj_idx
+
             # Single-cell bbox: [x, y, x+1, y+1]
             self.all_objects.append({
                 "type": obj_class, "tile_type": tile_type,
@@ -380,16 +482,14 @@ class PixelRoomMapper:
         if 0 <= cx < self.map_width and 0 <= cy < self.map_height:
             grid[cy, cx] = T.CAMERA
 
-        # Place each object as a single cell
+        # Place each object as a single cell — no overlaps
         for obj in self.all_objects:
             gx, gy = obj["grid_cell"]
-            oc = obj["type"]
             if 0 < gx < self.map_width - 1 and 0 < gy < self.map_height - 1:
                 t = grid[gy, gx]
                 if t in (T.WALL, T.CAMERA, T.DOOR):
                     continue
-                grid[gy, gx] = T.get_overlap_tile_type(t, oc) if t != T.FREE_SPACE \
-                               else T.get_tile_type(oc)
+                grid[gy, gx] = T.get_tile_type(obj["type"])
         return grid
 
     # ── Save ──
