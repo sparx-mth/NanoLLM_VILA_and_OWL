@@ -21,29 +21,13 @@ BASE_PATH = str(Path(__file__).resolve().parent.parent)
 # CLI args to forward to subprocesses (everything after script name)
 _EXTRA_ARGS = sys.argv[1:]
 
-# Log directory for subprocess output (prevents pipe-buffer deadlock)
-_LOG_DIR = os.path.join(BASE_PATH, "room_mapping", "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
-
-_log_files = []  # keep references so they aren't garbage-collected
-
 
 def _spawn(script_name):
-    """Launch a subprocess with output redirected to log files.
-
-    Previously used subprocess.PIPE, but nobody drained the pipes while
-    processes were running.  After ~30-60 min the 64 KB OS pipe buffer
-    fills up and the child blocks on its next print() — freezing forever.
-    Writing to log files avoids this entirely and keeps logs for debugging.
-    """
-    stem = os.path.splitext(script_name)[0]
-    out = open(os.path.join(_LOG_DIR, f"{stem}_stdout.log"), "a")
-    err = open(os.path.join(_LOG_DIR, f"{stem}_stderr.log"), "a")
-    _log_files.extend([out, err])
+    """Launch a subprocess with the same CLI overrides."""
     return subprocess.Popen(
         [sys.executable, script_name] + _EXTRA_ARGS,
-        stdout=out,
-        stderr=err,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -167,7 +151,6 @@ def main():
             for name, proc in processes:
                 if proc.poll() is not None:
                     print(f"\n Warning: {name} has stopped (exit code: {proc.returncode})")
-                    print(f"  Check logs in {_LOG_DIR}")
                     if name == "Web Server":
                         print("Restarting Web Server...")
                         new_proc = _spawn("web_mission_server_llm.py")
@@ -197,12 +180,6 @@ def main():
                     proc.kill()
 
         print("\nAll components stopped.")
-        # Close log file handles
-        for lf in _log_files:
-            try:
-                lf.close()
-            except Exception:
-                pass
         print("=" * 60)
 
 
