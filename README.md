@@ -37,19 +37,19 @@ vllm serve /app/model \
 
 in terminal 2:
 ```
-cd /jetson-containers/data
+cd jetson-containers/data
 python3 -m http.server 9000 --bind 0.0.0.0
 ```
 
 test:
 ```
-curl -s http://127.0.0.1:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
+curl -s http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+    "model": "/app/model",
     "messages": [{
       "role": "user",
       "content": [
         {"type":"text","text":"Describe in a short list JUST the objects in the image."},
-        {"type":"image_url","image_url":{"url":"http://172.16.17.15:9000/R1/latest/R1_20260127_133755.jpg"}}
+        {"type":"image_url","image_url":{"url":"http://192.0.0.89:9000/R1/latest/R2_20260503_170601_3_1.jpg"}}
       ]
     }],
     "max_tokens": 64
@@ -82,10 +82,15 @@ python3 nanoowl_service.py \
 
 test
 ```bash
-curl -s -X POST http://172.16.17.12:5060/infer   
--F 'image=@/home/user/Pictures/PortraitA_01.jpg'   
--F 'prompts=["sky","a tree","a bulk"]'  
--F 'annotate=1' | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin), indent=2))'
+echo -n '{"image_b64": "' > request.json
+base64 -w 0 "/home/user/Pictures/ExpoTLV/test_1024.jpg" >> request.json
+echo '", "prompts": ["chair", "couch", "light"], "threshold": 0.1}' >> request.json
+
+# Send it
+curl -s -X POST http://192.0.0.89:5060/infer \
+  -H "Content-Type: application/json" \
+  --data-binary @request.json | jq '.detections'
+
 
 
 ```

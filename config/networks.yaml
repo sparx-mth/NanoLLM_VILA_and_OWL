@@ -27,6 +27,20 @@ profiles:
       vllm:           { host: "nano", port: 8000 }
       ingest_json:    { host: "agx2", port: 9090 }
 
+  xtend:
+    hosts:
+      agx1: { user: "user",  ip: "192.0.0.89" }
+      agx2: { user: "nvidia", ip: "192.0.0.90" }
+      nano: { user: "user",  ip: "192.0.0.91" }
+    services:
+      comm_manager: { host: "agx1", port: 5050 }
+      vila_api: { host: "agx1", port: 8080 }
+      nanoowl: { host: "agx1", port: 5060 }
+      depth: { host: "agx1", port: 5070 }
+      display_server: { host: "agx1", port: 8090 }
+      vllm: { host: "nano", port: 8000 }
+      ingest_json: { host: "agx2", port: 9090 }
+
 defaults:
-  profile: "robotican"
+  profile: "xtend"
   ssh_flags: "-X"
