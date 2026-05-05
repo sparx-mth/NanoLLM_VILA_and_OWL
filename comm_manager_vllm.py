@@ -404,8 +404,10 @@ def _draw_label_box(img, x1, y1, text, color):
     Draw a filled background for readable label text.
     """
     font  = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 2.0
-    thick = 2
+    # dynamic scaling based on image width
+    H, W = img.shape[:2]
+    scale = max(0.5, W / 1000.0)
+    thick = max(1, int(W / 500))
     (tw, th), bl = cv2.getTextSize(text, font, scale, thick)
     cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), color, thickness=-1)
     cv2.putText(img, text, (x1 + 3, y1 - 4), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
@@ -452,7 +454,8 @@ def _annotate_from_json(image_path: str, json_path: str):
         score = d["score"]
         text  = f"{label}" + (f" {score:.2f}" if isinstance(score, float) else "")
         color = _color_for_label(label)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=7)
+        rect_thick = max(2, int(W / 200))
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=rect_thick)
         _draw_label_box(img, x1, y1, text, color)
 
     out_path = _ann_outpath_for_image(image_path)
