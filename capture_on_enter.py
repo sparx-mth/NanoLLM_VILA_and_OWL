@@ -12,11 +12,11 @@ from pathlib import Path
 
 # --- Default Configuration ---
 DEFAULT_ROOT_DIR = "/home/user/jetson-containers/data/R1/"
-DEFAULT_ROWS = 2
-DEFAULT_COLS = 2
+DEFAULT_ROWS = 1
+DEFAULT_COLS = 1
 DEFAULT_WIDTH = 0
 DEFAULT_HEIGHT = 0
-DEFAULT_OVERLAP = 0.1  # 10%
+DEFAULT_OVERLAP = 0.0  
 
 # Global variables
 session_folder_path = None
@@ -193,12 +193,15 @@ def main():
         with HeadlessKeys() as k:
             while running:
                 key = k.getch()
-                if key:
-                    if key in [' ', 'c', '\n', '\r']: capture_image()
-                    elif key == 'q':
-                        print("\nQuitting...")
-                        running = False
-                        break
+                if key in [' ', 'c', '\n', '\r']:
+                    capture_image()
+                    print("\n[Capture] Done. Exiting...")
+                    running = False
+                    break
+                elif key == 'q':
+                    print("\nQuitting...")
+                    running = False
+                    break
                 time.sleep(0.01)
     except KeyboardInterrupt: print("\nInterrupted.")
     finally: running = False; t.join()

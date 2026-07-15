@@ -43,7 +43,7 @@
   "room": {
     "mode": "standalone",
     "room_name": "main_room",
-    "grid_cells": [51, 51],
+    "grid_cells": [21, 21],
     "grid_resolution": null,
     "room_width_m": null,
     "room_height_m": null,
@@ -54,7 +54,7 @@
   },
 
   "rendering": {
-    "cell_size": 25,
+    "cell_size": 35,
     "legend_width": 400,
     "reload_interval": 500
   },

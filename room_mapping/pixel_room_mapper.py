@@ -9,6 +9,9 @@ Grid coords:  origin = top-left (NW),  +X = east,  +Y = south.
   West(x=0)        East(x=W)
     │                  │
     └── South (y=H) ──┘
+
+CHANGED: Each object occupies exactly ONE cell at its center of gravity.
+         No size-based footprint — minimal overlaps on the 2D map.
 """
 
 import numpy as np, json, math, os, glob, time, hashlib
@@ -224,7 +227,7 @@ class PixelRoomMapper:
 
         self.tiles = DynamicTileManager(existing_registry)
         self.all_objects = []
-        self.duplicate_overlap_threshold = 0.5
+        self.occupied_cells = {}  # (gx, gy) -> index in all_objects
 
     # ── Helpers ──
 
@@ -294,20 +297,101 @@ class PixelRoomMapper:
 
     # ── Duplicate detection ──
 
-    @staticmethod
-    def _cells(bbox):
-        x1, y1, x2, y2 = bbox if isinstance(bbox, (list, tuple)) else bbox["bbox"]
-        return {(x, y) for y in range(y1, y2) for x in range(x1, x2)}
-
-    def _is_duplicate(self, obj_class, new_cells):
+    def _is_duplicate(self, obj_class, gx, gy):
+        """Check if an object of the same class already occupies this cell."""
         for ex in self.all_objects:
             if ex["type"] == obj_class:
-                ec = self._cells(ex["bbox"])
-                shared = new_cells & ec
-                smaller = min(len(new_cells), len(ec))
-                if smaller > 0 and len(shared) / smaller >= self.duplicate_overlap_threshold:
+                ex_gx, ex_gy = ex["grid_cell"]
+                if ex_gx == gx and ex_gy == gy:
                     return True
         return False
+
+    # ── Collision resolution ──
+
+    def _cell_is_free(self, gx, gy):
+        """Check if a grid cell is available for placement."""
+        if gx <= 0 or gy <= 0 or gx >= self.map_width - 1 or gy >= self.map_height - 1:
+            return False  # wall / out of bounds
+        return (gx, gy) not in self.occupied_cells
+
+    def _resolve_collision(self, gx, gy, new_pos_m):
+        """Nudge a new object away from the existing occupant based on their
+        world-position difference.
+
+        Returns (final_gx, final_gy) or None if every nearby cell is taken.
+
+        Logic:
+          1. Compare world positions (metres) of new vs existing object.
+          2. Primary axis = the larger absolute difference (lateral vs depth).
+          3. Build an ordered list of candidate offsets: preferred direction on
+             primary axis first, then secondary axis, then opposites, then
+             diagonals.
+          4. Return the first candidate that is free.
+          5. If all 12 neighbours (ring-1 + ring-2 cardinal) are taken, spiral
+             outward up to radius 3.
+        """
+        existing_idx = self.occupied_cells[(gx, gy)]
+        existing_obj = self.all_objects[existing_idx]
+        ex_pos = existing_obj["position_m"]
+
+        dx_m = new_pos_m[0] - ex_pos[0]   # positive = new is to the right
+        dy_m = new_pos_m[1] - ex_pos[1]   # positive = new is further south
+
+        # Determine preferred direction per axis
+        sx = 1 if dx_m >= 0 else -1   # horizontal nudge sign
+        sy = 1 if dy_m >= 0 else -1   # vertical nudge sign
+
+        # Primary axis = larger absolute difference
+        if abs(dx_m) >= abs(dy_m):
+            # lateral difference dominates → try X first
+            candidates = [
+                (sx, 0),       # primary preferred
+                (0, sy),       # secondary preferred
+                (-sx, 0),      # primary opposite
+                (0, -sy),      # secondary opposite
+                (sx, sy),      # diagonal preferred
+                (sx, -sy),
+                (-sx, sy),
+                (-sx, -sy),    # diagonal opposite
+            ]
+        else:
+            # depth difference dominates → try Y first
+            candidates = [
+                (0, sy),       # primary preferred
+                (sx, 0),       # secondary preferred
+                (0, -sy),      # primary opposite
+                (-sx, 0),      # secondary opposite
+                (sx, sy),      # diagonal preferred
+                (sx, -sy),
+                (-sx, sy),
+                (-sx, -sy),
+            ]
+
+        # De-duplicate candidate list (preserve order)
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+
+        # Try ring-1
+        for cdx, cdy in unique:
+            nx, ny = gx + cdx, gy + cdy
+            if self._cell_is_free(nx, ny):
+                return (nx, ny)
+
+        # Try ring-2 and ring-3 (spiral outward)
+        for radius in range(2, 4):
+            for cdx in range(-radius, radius + 1):
+                for cdy in range(-radius, radius + 1):
+                    if abs(cdx) < radius and abs(cdy) < radius:
+                        continue  # skip inner cells already tried
+                    nx, ny = gx + cdx, gy + cdy
+                    if self._cell_is_free(nx, ny):
+                        return (nx, ny)
+
+        return None  # extremely congested — give up
 
     # ── Scan Ingestion ──
 
@@ -334,34 +418,47 @@ class PixelRoomMapper:
             max_depth = det.get("max_depth_col_m")
             tile_type = self.tiles.get_tile_type(obj_class)
             ox, oy = self.calculate_position(bbox, yaw, fw, depth_m, intrinsics, max_depth)
+
+            # Still estimate size for metadata, but do NOT use it for grid footprint
             wm, hm = self.estimate_object_size(bbox, fw, fh, depth_m, intrinsics)
 
-            margin = 0.05
-            ox = max(margin + wm / 2, min(self.room_width_m - margin - wm / 2, ox))
-            oy = max(margin + hm / 2, min(self.room_height_m - margin - hm / 2, oy))
-
+            # ── SINGLE CELL at center of gravity ──
             gx, gy = self.meters_to_grid(ox, oy)
-            wc, hc = max(1, int(wm / self.res_x)), max(1, int(hm / self.res_y))
-            if abs(math.sin(yaw)) > abs(math.cos(yaw)):
-                wc, hc = hc, wc
 
-            x1, y1 = gx - wc // 2, gy - hc // 2
-            x2, y2 = x1 + wc, y1 + hc
+            # Offset for existing_map mode
             if self.mode == "existing_map":
-                bx, by = self.room_bbox[0], self.room_bbox[1]
-                x1 += bx; y1 += by; x2 += bx; y2 += by
+                gx += self.room_bbox[0]
+                gy += self.room_bbox[1]
 
-            cells = self._cells([x1, y1, x2, y2])
-            if self._is_duplicate(obj_class, cells):
-                print(f"  Skip duplicate: {obj_class}"); continue
+            # Duplicate check: same class on same cell
+            if self._is_duplicate(obj_class, gx, gy):
+                print(f"  Skip duplicate: {obj_class} at ({gx},{gy})")
+                continue
 
+            # ── Collision resolution: nudge if cell is occupied ──
+            if (gx, gy) in self.occupied_cells:
+                resolved = self._resolve_collision(gx, gy, [ox, oy])
+                if resolved is None:
+                    print(f"  Skip congested: {obj_class} at ({gx},{gy}) — no free neighbour")
+                    continue
+                old_gx, old_gy = gx, gy
+                gx, gy = resolved
+                print(f"  Nudged: {obj_class} ({old_gx},{old_gy})->({gx},{gy})")
+
+            # Register the cell
+            obj_idx = len(self.all_objects)
+            self.occupied_cells[(gx, gy)] = obj_idx
+
+            # Single-cell bbox: [x, y, x+1, y+1]
             self.all_objects.append({
                 "type": obj_class, "tile_type": tile_type,
-                "bbox": [x1, y1, x2, y2], "depth_m": depth_m,
+                "bbox": [gx, gy, gx + 1, gy + 1],
+                "grid_cell": (gx, gy),
+                "depth_m": depth_m,
                 "position_m": [round(ox, 3), round(oy, 3)],
                 "size_m": [round(wm, 3), round(hm, 3)]})
-            print(f"  Added: {obj_class} ({ox:.2f},{oy:.2f})m depth={depth_m:.2f}m "
-                  f"size=({wm:.2f}x{hm:.2f})m")
+            print(f"  Added: {obj_class} ({ox:.2f},{oy:.2f})m -> cell ({gx},{gy}) "
+                  f"depth={depth_m:.2f}m")
 
     # ── Grid Creation ──
 
@@ -385,16 +482,14 @@ class PixelRoomMapper:
         if 0 <= cx < self.map_width and 0 <= cy < self.map_height:
             grid[cy, cx] = T.CAMERA
 
+        # Place each object as a single cell — no overlaps
         for obj in self.all_objects:
-            x1, y1, x2, y2 = obj["bbox"]
-            oc = obj["type"]
-            for y in range(y1, y2):
-                for x in range(x1, x2):
-                    if 0 < x < self.map_width - 1 and 0 < y < self.map_height - 1:
-                        t = grid[y, x]
-                        if t in (T.WALL, T.CAMERA, T.DOOR): continue
-                        grid[y, x] = T.get_overlap_tile_type(t, oc) if t != T.FREE_SPACE \
-                                     else T.get_tile_type(oc)
+            gx, gy = obj["grid_cell"]
+            if 0 < gx < self.map_width - 1 and 0 < gy < self.map_height - 1:
+                t = grid[gy, gx]
+                if t in (T.WALL, T.CAMERA, T.DOOR):
+                    continue
+                grid[gy, gx] = T.get_tile_type(obj["type"])
         return grid
 
     # ── Save ──
@@ -650,10 +745,13 @@ def main():
 
     bbox_dir = os.path.join(BASE_PATH, "room_mapping", cfg.ingest_out_dir)
     last_count = -1
+    last_process_time = 0
+    FORCE_REFRESH_INTERVAL = 20  # seconds
     try:
         while True:
             files = glob.glob(os.path.join(bbox_dir, "*.json"))
-            if len(files) != last_count:
+            force_refresh = (time.time() - last_process_time) >= FORCE_REFRESH_INTERVAL
+            if len(files) != last_count or (force_refresh and files):
                 if files:
                     print(f"\n[{time.strftime('%H:%M:%S')}] {len(files)} file(s)")
                     n = process_files(
@@ -663,6 +761,7 @@ def main():
                         grid_resolution=grid_resolution, grid_cells=grid_cells,
                         room_width_m=room_width_m, room_height_m=room_height_m)
                     if n: print(f"Processed {n} files -> {cfg.unified_rooms_json} + {cfg.house_map_txt}")
+                    last_process_time = time.time()
                 else:
                     print(f"[{time.strftime('%H:%M:%S')}] No detection files")
                     if mode != "existing_map":

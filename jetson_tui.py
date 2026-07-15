@@ -94,11 +94,12 @@ def main():
 
         elif choice == '3':
             # Stage 1: Capture
-            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 2 --cols 2"
+            cap_cmd = f"python3 capture_on_enter.py --root {CAPTURES_ROOT} --rows 1 --cols 1"
             run_ssh_interactively(cap_cmd, "Stage 1: Capture")
 
             # Stage 2: Process (Now with Auto-Exit)
             print("\nMoving to Stage 2: Automatic Inference...")
+            cleanup_remote_port(5050)  # Kill old Comm Manager
             run_comm_manager_auto(comm_cmd)
             input("\nPipeline Finished. Press Enter...")
 

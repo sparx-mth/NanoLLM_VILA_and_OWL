@@ -424,13 +424,30 @@ def merge_tiles_and_send(
         mosaicW = tileW + max_c * strideX
         mosaicH = tileH + max_r * strideY
 
-        # --- stitch mosaic ---
+        # --- stitch mosaic: each tile contributes only its non-overlapping part ---
         mosaic = np.zeros((mosaicH, mosaicW, 3), dtype=np.uint8)
+        
         for t in gtiles:
             x0 = t["c"] * strideX
             y0 = t["r"] * strideY
             h, w = t["H"], t["W"]
-            mosaic[y0:y0+h, x0:x0+w] = t["img"]
+            
+            # Extract only the non-overlapping part of this tile
+            # crop_left: keep right edge if not first column, else keep full
+            crop_left = 0 if t["c"] == 0 else (w - strideX)
+            # crop_top: keep bottom edge if not first row, else keep full
+            crop_top = 0 if t["r"] == 0 else (h - strideY)
+            
+            # Width to extract: from crop_left to end of tile
+            crop_w = w - crop_left
+            # Height to extract: from crop_top to end of tile
+            crop_h = h - crop_top
+            
+            # Extract the region from tile
+            tile_region = t["img"][crop_top:crop_top+crop_h, crop_left:crop_left+crop_w]
+            
+            # Place it in mosaic at the correct stripe position (no double-offset)
+            mosaic[y0:y0+crop_h, x0:x0+crop_w] = tile_region
 
         # ✅ FINAL output names (display-friendly)
         final_img_name = f"{gid}.jpg"
@@ -779,7 +796,7 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
             img_url = _to_image_url(image_path)
 
             payload = {
-                "model": VLLM_MODEL,
+                "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -912,9 +929,9 @@ def process_folder(
     def _vlm_job(task):
         jpg = task["jpg"]
         img_for_vlm = task["img_for_vlm"]
-        log(f"[vlm] POST {VLLM_URL} image_path={img_for_vlm}")
+        log(f"[vlm] POST {endpoint} image_path={img_for_vlm}")
         t0 = time.time()
-        res = call_vlm(VLLM_URL, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
+        res = call_vlm(endpoint, img_for_vlm, timeout_s=timeout_s, retries=retries, retry_sleep_s=retry_sleep_s)
         dt = time.time() - t0
         log(f"[vlm] {jpg} took {dt:.2f}s ok={res.ok}")
         return jpg, res
@@ -1072,7 +1089,7 @@ def run_process_once(args):
     tiles_ann_dir = Path(args.tiles_root) / TILES_ANN_SUBDIR / run_id
     out_root      = Path(args.out_root)
     out_run_dir   = out_root / run_id
-    out_ann_dir   = out_root / f"{run_id}_ANN"
+    out_ann_dir   = out_root / f"{run_id}_ann"
 
     tiles_ann_dir.mkdir(parents=True, exist_ok=True)
     out_run_dir.mkdir(parents=True, exist_ok=True)
@@ -1268,7 +1285,7 @@ def main():
     print(f"  nanoowl_endpoint = {NANOOWL_ENDPOINT} (annotate={NANOOWL_ANNOTATE})")
 
     def handle_shutdown(signum, frame):
-        log(f"[Main] Shutdown signal ({signum}) received. Releasing worker...")
+        log(f"[Main] Shutdown signal ({signum}) received. Setting shutdown event...")
         shutdown_event.set()
 
     def worker_loop(args):
@@ -1277,16 +1294,43 @@ def main():
                 run_process_once(args)
             except Exception as e:
                 log(f"[worker][fatal] {e}")
-            time.sleep(args.watch_interval)
+            # Check shutdown event every 100ms
+            for _ in range(int(args.watch_interval * 10)):
+                if shutdown_event.is_set():
+                    break
+                time.sleep(0.1)
+        log("[worker] Exiting worker loop")
+
+    def flask_app_thread():
+        """Run Flask in a background thread"""
+        app.run(host=args.host, port=args.port, threaded=True, use_reloader=False, debug=False)
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
-    worker_thread = threading.Thread(target=worker_loop, args=(args,), daemon=True)
+    
+    # Start worker thread (non-daemon so we can wait for it)
+    worker_thread = threading.Thread(target=worker_loop, args=(args,), daemon=False)
     worker_thread.start()
+    
+    # Start Flask thread (daemon so it exits when all non-daemon threads exit)
+    flask_thread = threading.Thread(target=flask_app_thread, daemon=True)
+    flask_thread.start()
 
-    app.run(host=args.host, port=args.port)
-
-
+    log("[Main] Flask and worker threads started. Listening for shutdown signal...")
+    
+    # Main thread: wait for shutdown signal
+    try:
+        while not shutdown_event.is_set():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        log("[Main] KeyboardInterrupt - setting shutdown event")
+        shutdown_event.set()
+    finally:
+        log("[Main] Setting shutdown event and waiting for workers...")
+        shutdown_event.set()
+        # Wait for worker thread to finish (max 10 seconds)
+        worker_thread.join(timeout=10)
+        log("[Main] Shutdown complete")
 
 if __name__ == "__main__":
     main()
