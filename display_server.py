@@ -448,7 +448,7 @@ INDEX_HTML = r"""
     .footer { color:#9ca3af; font-size:12px; padding:6px 18px 14px; text-align:center; }
 
     /* Modal */
-    .modal { position:fixed; inset:0; display:none; background:rgba(0,0,0,.5); align-items:center; justify-content:center; padding:20px; }
+    .modal { position:fixed; inset:0; display:none; background:rgba(0,0,0,.5); align-items:center; justify-content:center; padding:20px; z-index:9999; }
     .modal.open { display:flex; }
     .modal-card { max-width:1100px; width:100%; max-height:90vh; background:#0b1220; border:1px solid #253044; border-radius:18px; overflow:hidden; display:grid; grid-template-columns: 1.1fr 0.9fr; }
     .modal-left { background:#0a0f1b; border-right:1px solid #1e293b; display:flex; align-items:center; justify-content:center; }
@@ -545,10 +545,10 @@ INDEX_HTML = r"""
   <div class="footer">Serving images + metadata from your ingested folder • VLM on Jetson ♥</div>
 
   <div class="modal" id="roomMapModal">
-    <div class="modal-card" style="grid-template-columns: 1fr; max-width: 1400px;">
-      <div class="modal-left" style="position: relative;">
+    <div class="modal-card" style="grid-template-columns: 1fr; max-width: 1400px; max-height: 90vh;">
+      <div class="modal-left" style="position: relative; padding: 12px;">
         <button class="close" id="roomMapCloseBtn" style="position:absolute; top:8px; right:8px; z-index:2;">×</button>
-        <img id="roomMapImg" alt="room map" style="width:100%; height:auto; object-fit:contain;" />
+        <img id="roomMapImg" alt="room map" style="max-width:100%; max-height:85vh; width:auto; height:auto; object-fit:contain;" />
         <div id="roomMapEmpty" style="display:none; color:#e5e7eb; padding:24px; text-align:center;">
           No room map yet — run Room Mapper, then click this button again.
         </div>
