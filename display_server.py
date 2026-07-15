@@ -103,6 +103,42 @@ def _depth_variant(path: Path) -> Optional[Path]:
     return None
 
 
+def _npy_depth_png(img_path: Path, rel_root: Path) -> Optional[Path]:
+    """Render a companion DA3 .npy depth array as a cached colorized PNG.
+
+    comm_manager's "latest_ann" output only ever contains RGB+JSON (no depth) —
+    so if the .npy isn't next to img_path, fall back to the raw dome-capture
+    session ("latest") which has the matching-stem .npy from the same flight.
+    """
+    cache_path = img_path.parent / f"{img_path.stem}_depth.png"
+
+    npy_candidates = [img_path.parent / f"{img_path.stem}.npy"]
+    latest_raw = rel_root / "latest"
+    if latest_raw.exists():
+        npy_candidates.append(latest_raw.resolve() / f"{img_path.stem}.npy")
+    npy_path = next((c for c in npy_candidates if c.exists()), None)
+    if npy_path is None:
+        return None
+
+    if cache_path.exists() and cache_path.stat().st_mtime >= npy_path.stat().st_mtime:
+        return cache_path
+
+    try:
+        import numpy as np
+        import cv2
+        depth = np.load(str(npy_path))
+        if depth.ndim == 3:
+            depth = depth[..., 0]
+        depth = np.nan_to_num(depth.astype("float32"), nan=0.0, posinf=0.0, neginf=0.0)
+        depth_norm = (np.clip(depth, 0.0, 5.0) / 5.0 * 255.0).astype("uint8")
+        colored = cv2.applyColorMap(depth_norm, cv2.COLORMAP_MAGMA)
+        cv2.imwrite(str(cache_path), colored)
+        return cache_path
+    except Exception as e:
+        print(f"[depth] failed to render {npy_path}: {e}")
+        return None
+
+
 
 def _extract_vlm_terms(doc: Dict) -> List[str]:
     try:
@@ -161,8 +197,14 @@ def _ann_variant(path: Path) -> Path:
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
-    latest = root / "latest"
-    return latest if latest.exists() and latest.is_dir() else None
+    # Prefer "latest_ann" (comm_manager's annotated output — VLM captions + OWL
+    # boxes) since that's what this display is for; fall back to "latest" (the
+    # raw dome-capture session) for roots that predate the latest_ann split.
+    for name in ("latest_ann", "latest"):
+        cand = root / name
+        if cand.exists() and cand.is_dir():
+            return cand
+    return None
     """Return newest immediate subdirectory under root (by ctime)."""
     try:
         subdirs = [d for d in root.iterdir() if d.is_dir()]
@@ -261,7 +303,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             except Exception:
                 text = "(failed to read/parse JSON)"
 
-        depth_path = _depth_variant(img_path)
+        depth_path = _depth_variant(img_path) or _npy_depth_png(img_path, rel_root)
         depth_rel = str(depth_path.relative_to(rel_root)) if depth_path else None
 
         items.append(Item(
@@ -379,7 +421,7 @@ INDEX_HTML = r"""
     .badge { background:#0ea5b7; color:#002227; padding:2px 8px; border-radius:999px; font-weight:700; font-size:12px; }
     .grid{
     display:grid;
-    grid-template-columns: 1fr;     
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap:16px;
     padding:18px;
     width:100%;
@@ -494,12 +536,25 @@ INDEX_HTML = r"""
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
       <small style="color:var(--muted)">Auto-refresh <b id="interval"></b> sec</small>
+      <button class="btn" id="roomMapBtn">🗺️ Room Map</button>
       <button class="btn" id="refreshBtn">Refresh now</button>
     </div>
   </header>
 
   <main class="grid" id="grid"></main>
   <div class="footer">Serving images + metadata from your ingested folder • VLM on Jetson ♥</div>
+
+  <div class="modal" id="roomMapModal">
+    <div class="modal-card" style="grid-template-columns: 1fr; max-width: 1400px;">
+      <div class="modal-left" style="position: relative;">
+        <button class="close" id="roomMapCloseBtn" style="position:absolute; top:8px; right:8px; z-index:2;">×</button>
+        <img id="roomMapImg" alt="room map" style="width:100%; height:auto; object-fit:contain;" />
+        <div id="roomMapEmpty" style="display:none; color:#e5e7eb; padding:24px; text-align:center;">
+          No room map yet — run Room Mapper, then click this button again.
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="modal" id="modal">
     <div class="modal-card">
@@ -618,6 +673,22 @@ INDEX_HTML = r"""
     });
     document.getElementById('modal').addEventListener('click', (e)=>{
       if(e.target.id === 'modal') document.getElementById('modal').classList.remove('open');
+    });
+
+    document.getElementById('roomMapBtn').addEventListener('click', ()=>{
+      const img = document.getElementById('roomMapImg');
+      const empty = document.getElementById('roomMapEmpty');
+      img.style.display = 'block';
+      empty.style.display = 'none';
+      img.onerror = ()=>{ img.style.display = 'none'; empty.style.display = 'block'; };
+      img.src = '/img/latest_room_map/map_with_objects.png?t=' + Date.now();  // cache-bust
+      document.getElementById('roomMapModal').classList.add('open');
+    });
+    document.getElementById('roomMapCloseBtn').addEventListener('click', ()=>{
+      document.getElementById('roomMapModal').classList.remove('open');
+    });
+    document.getElementById('roomMapModal').addEventListener('click', (e)=>{
+      if(e.target.id === 'roomMapModal') document.getElementById('roomMapModal').classList.remove('open');
     });
 
     start();

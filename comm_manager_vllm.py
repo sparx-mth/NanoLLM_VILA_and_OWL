@@ -28,7 +28,6 @@ python3 comm_manager.py   --host 0.0.0.0    --port 5050     --jetson2-endpoint h
 
 """
 import datetime
-import queue
 import signal
 import sys
 import threading
@@ -60,7 +59,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 shutdown_event = threading.Event()
-vlm_caption_queue = queue.Queue()
 app = Flask(__name__)
 
 # --- Runtime configuration (populated from CLI args) ---
@@ -69,6 +67,11 @@ CAPTURES_ROOT = None         # e.g., /home/user/jetson-containers/data/images/ca
 
 NANOOWL_TIMEOUT = 45.0       # NanoOWL infer timeout
 NANOOWL_ANNOTATE = 0         # annotate flag sent to NanoOWL (0/1)
+
+# Grayscale std-dev below this is treated as a blank/gray frame (e.g. the camera
+# warm-up frame at the very start of a capture, before the feed has stabilized)
+# and skipped before spending a VLM/OWL call on it.
+BLANK_FRAME_STD_THRESH = 8.0
 
 _ANN_RE = re.compile(r"_ann\.(jpg|jpeg|png)$", re.IGNORECASE)
 
@@ -404,8 +407,10 @@ def _draw_label_box(img, x1, y1, text, color):
     Draw a filled background for readable label text.
     """
     font  = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 2.0
-    thick = 2
+    # dynamic scaling based on image width
+    H, W = img.shape[:2]
+    scale = max(0.5, W / 1000.0)
+    thick = max(1, int(W / 500))
     (tw, th), bl = cv2.getTextSize(text, font, scale, thick)
     cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), color, thickness=-1)
     cv2.putText(img, text, (x1 + 3, y1 - 4), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
@@ -452,7 +457,8 @@ def _annotate_from_json(image_path: str, json_path: str):
         score = d["score"]
         text  = f"{label}" + (f" {score:.2f}" if isinstance(score, float) else "")
         color = _color_for_label(label)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=7)
+        rect_thick = max(2, int(W / 200))
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=rect_thick)
         _draw_label_box(img, x1, y1, text, color)
 
     out_path = _ann_outpath_for_image(image_path)
@@ -541,11 +547,6 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
     """
     Replaces VILA /describe with vLLM Qwen3-VL OpenAI-compatible endpoint:
       POST {endpoint}/v1/chat/completions
-
-    Keeps minimal pipeline changes by:
-      - returning VlmResult(caption=...)
-      - ALSO pushing caption into vlm_caption_queue so existing code that does
-        vlm_caption_queue.get() continues to work unchanged.
     """
     last_err = None
 
@@ -563,8 +564,10 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
 
             img_url = _to_image_url(image_path)
 
+            # "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+
             payload = {
-                "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
+                "model": "/app/model",  # or pass via args if you want later
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -593,8 +596,6 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
                     last_err = "Empty caption from vLLM"
                     log(f"[vlm-qwen] attempt {attempt}/{retries} got empty caption in {dt:.2f}s")
                 else:
-                    # <<< minimal-change trick: keep the queue-based flow alive >>>
-                    vlm_caption_queue.put(caption)
                     return VlmResult(ok=True, caption=caption, error=None)
 
         except Exception as e:
@@ -607,6 +608,22 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
             time.sleep(retry_sleep_s)
 
     return VlmResult(ok=False, caption=None, error=last_err)
+
+
+def _is_blank_gray_frame(img_path: Path, std_thresh: float = BLANK_FRAME_STD_THRESH) -> bool:
+    """Detect a near-uniform/gray frame (e.g. the camera warm-up frame at the
+    start of a capture, before the feed has stabilized) so it can be skipped
+    before wasting a VLM/OWL call on it. Any real scene has texture/edges and
+    therefore meaningful pixel variance; a blank/gray frame does not.
+    """
+    try:
+        img = cv2.imread(str(img_path))
+        if img is None:
+            return True  # unreadable — treat as junk, skip it
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return float(gray.std()) < std_thresh
+    except Exception:
+        return False  # if the check itself fails, don't block processing
 
 def process_folder(
     folder: str,
@@ -643,8 +660,13 @@ def process_folder(
     if folder_path.is_symlink():
         folder = folder_path.resolve()
 
-    # Manage the "latest" symlink to point to the current processing directory
-    latest_link = new_folder_path.parent / "latest"
+    # Point our own "latest_ann" symlink at the freshly-annotated output directory.
+    # NOTE: this used to repoint the shared "latest" symlink, which clobbered the
+    # raw dome-capture session (RGB+depth+pose) that xtend_dome_main.py maintains
+    # under that same name — downstream consumers (e.g. run_room_mapper.py, which
+    # defaults to --data-dir captures/latest) would then find zero depth frames.
+    # xtend_dome_main.py already reserves/clears "latest_ann" for this purpose.
+    latest_link = new_folder_path.parent / "latest_ann"
     try:
         if os.path.lexists(latest_link):
             os.remove(latest_link)
@@ -654,8 +676,14 @@ def process_folder(
 
     for jpg in jpgs:
         jpg_path = Path(folder) / jpg
+
+        if _is_blank_gray_frame(jpg_path):
+            log(f"[worker] Skipping blank/gray frame: {jpg}")
+            skipped += 1
+            continue
+
         shutil.copy(jpg_path, Path(new_folder))
-        
+
         # Update paths for the destination
         dest_jpg_path = new_folder_path / jpg
         base = os.path.splitext(jpg)[0]
@@ -694,8 +722,7 @@ def process_folder(
         dt = time.time() - t0
         log(f"[vlm] took {dt:.2f}s ok={res.ok}")
 
-        vlm_caption = vlm_caption_queue.get()
-        print("%%%%%%%%% vlm_caption ^^^^^^^^^^^", vlm_caption)
+        print("%%%%%%%%% vlm_caption ^^^^^^^^^^^", res.caption)
 
         # --- NanoOWL Logic ---
         if res.ok and res.caption:
