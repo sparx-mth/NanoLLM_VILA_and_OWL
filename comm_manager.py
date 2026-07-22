@@ -593,7 +593,9 @@ def process_folder(
     except Exception as e:
         print(f"Failed to create symlink {latest_link}: {e}")
 
-    for jpg in jpgs:
+    # for i, jpg in jpgs:
+    for i in range(0, len(jpgs)+ 1, 1):
+        jpg = jpgs[i]
         jpg_path = Path(folder) / jpg
         shutil.copy(jpg_path, Path(new_folder))
         jpg_path = new_folder_path / jpg

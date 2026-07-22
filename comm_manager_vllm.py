@@ -674,7 +674,9 @@ def process_folder(
     except Exception as e:
         print(f"Failed to create symlink {latest_link}: {e}")
 
-    for jpg in jpgs:
+    # for jpg in jpgs:
+    for i in range(0, len(jpgs) + 1, 1):
+        jpg = jpgs[i]
         jpg_path = Path(folder) / jpg
 
         if _is_blank_gray_frame(jpg_path):
