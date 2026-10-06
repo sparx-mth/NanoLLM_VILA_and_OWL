@@ -29,9 +29,11 @@ profiles:
 
   xtend:
     hosts:
+      adsl_daphna: {user: "user1", ip: "192.0.0.88"}
       agx1: { user: "user",  ip: "192.0.0.89" }
       agx2: { user: "nvidia", ip: "192.0.0.90" }
       nano: { user: "user",  ip: "192.0.0.91" }
+      adsl_shir: {user: "user1", ip: "192.0.0.92"}
     services:
       comm_manager: { host: "agx1", port: 5050 }
       vila_api: { host: "agx1", port: 8080 }

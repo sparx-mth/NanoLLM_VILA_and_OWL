@@ -212,9 +212,7 @@ def _extract_text(doc: dict) -> str:
 def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items: List[Item] = []
     seen_keys = set()  
-    imgs_list = [p for p in root.glob("**/*")]
-    print(f"[_collect_items] images list: {imgs_list}")
-    for img_path in root.glob("**/*"):
+    for img_path in sorted(root.glob("**/*")):
         if not img_path.is_file():
             continue
         if not _is_image(img_path):

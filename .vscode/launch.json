@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "comm_manager_vllm (single-shot)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/comm_manager_vllm.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--no-config",
+                "--host", "0.0.0.0",
+                "--port", "5050",
+                "--captures-root", "/home/iai/captures/R1",
+                "--endpoint", "http://127.0.0.1:8080",
+                "--nanoowl-endpoint", "http://127.0.0.1:5060/infer",
+                "--vllm-url", "http://127.0.0.1:8080",
+                "--vllm-model", "Qwen/Qwen2-VL-2B-Instruct",
+                "--vllm-max-tokens", "128",
+                "--forward-json-url", "",
+                "--vlm-timeout", "60",
+                "--retries", "3",
+                "--retry-sleep", "2",
+                "--sleep-between", "2",
+                "--force"
+            ]
+        }
+    ]
+}

@@ -150,19 +150,26 @@ def caption_to_owl_prompts(caption: str) -> list[str]:
         # (optional) keep simple
         s = s.replace('"', "").replace("'", "").strip()
 
-        # normalize: "floor tiles" -> keep as-is (OWL can detect plural too)
-        s = s.lower()
+        # the VLM sometimes lists objects comma-separated on one line
+        # instead of one per line, so split each line on commas too
+        for part in s.split(","):
+            part = part.strip()
+            if not part:
+                continue
 
-        # light cleanup of adjectives (optional)
-        tokens = [t for t in re.split(r"\s+", s) if t]
-        tokens = [t for t in tokens if t not in _DROP_WORDS]
-        s = " ".join(tokens).strip()
+            # normalize: "floor tiles" -> keep as-is (OWL can detect plural too)
+            part = part.lower()
 
-        # remove trailing punctuation
-        s = s.strip(" .,:;")
+            # light cleanup of adjectives (optional)
+            tokens = [t for t in re.split(r"\s+", part) if t]
+            tokens = [t for t in tokens if t not in _DROP_WORDS]
+            part = " ".join(tokens).strip()
 
-        if s:
-            lines.append(s)
+            # remove trailing punctuation
+            part = part.strip(" .,:;")
+
+            if part:
+                lines.append(part)
 
     # dedupe preserving order + add a/an prefix
     out, seen = [], set()
@@ -566,10 +573,8 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
 
             img_url = _to_image_url(image_path)
 
-            # "model": "cpatonn/Qwen3-VL-4B-Instruct-AWQ-4bit",  # or pass via args if you want later
-
             payload = {
-                "model": "/app/model",  # or pass via args if you want later
+                "model": VLLM_MODEL,
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -577,8 +582,8 @@ def call_vlm(endpoint: str, image_path: str, timeout_s: float, retries: int, ret
                         {"type": "image_url", "image_url": {"url": img_url}},
                     ]
                 }],
-                "max_tokens": 64,
-                "temperature": 0.1,
+                "max_tokens": VLLM_MAX_TOKENS,
+                "temperature": VLLM_TEMPERATURE,
             }
 
             url = f"{endpoint.rstrip('/')}/v1/chat/completions"
@@ -907,7 +912,7 @@ def main():
     p.add_argument("--vllm-url", default=None, help="e.g. http://192.168.131.21:8000") 
     p.add_argument("--vllm-model", required=True, help="model name as served by vLLM")
     p.add_argument("--vllm-timeout", type=float, default=20.0)
-    p.add_argument("--vllm-max-tokens", type=int, default=32)
+    p.add_argument("--vllm-max-tokens", type=int, default=128)
     p.add_argument("--vllm-temperature", type=float, default=0.2)
 
     # nanoowl
