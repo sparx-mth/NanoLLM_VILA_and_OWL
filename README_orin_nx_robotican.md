@@ -234,7 +234,11 @@ depth is scaled by the focal length, so use the real camera's calibration otherw
 loader reads `image_width`, `image_height` and `camera_matrix.data` (9 values), not `fx`/`fy`.
 
 ```bash
-# 1. image (needs internet once; docker/da3 is deployed with the repo)
+# 0. DA3 source is NOT in this repo (docker/da3/src is git-ignored) - fetch it once:
+git clone https://github.com/daphnaa/ros2-depth-anything-v3-trt ~/NanoLLM_VILA_and_OWL/docker/da3/src/ros2-depth-anything-v3-trt
+git -C ~/NanoLLM_VILA_and_OWL/docker/da3/src/ros2-depth-anything-v3-trt checkout 52131cc
+
+# 1. image (needs internet once)
 cd ~/NanoLLM_VILA_and_OWL/docker/da3 && docker build -t da3:orin .
 
 # 2. model folder: ONNX + data (data file renamed!) + camera YAML
@@ -290,31 +294,48 @@ rsync -avz /path/to/changed_file.py iai@172.16.17.8:/home/iai/NanoLLM_VILA_and_O
 
 ---
 
-## Backups (do this before the board goes on the drone)
+## Backups and cloning to more boards
 
-Both the vLLM model cache and the NanoOWL CLIP cache live under
-`/home/iai/jetson-containers/data/models/`, outside any container's own filesystem —
-survives container restarts, but **not** a board reflash. Back them up externally:
+Everything the three services need lives outside git: three Docker images (vLLM, NanoOWL,
+DA3 — `nanoowl_orin_nx:v1` and `da3:orin` exist **only** as local images) and the model
+caches under `~/jetson-containers/data` and `~/da3_models`. None of it survives a reflash.
+The same export is how you set up another board when you can only reach one at a time
+(via a laptop or USB disk). Budget ~35 GB.
 
+**On the source board** — write to `~/export`, **not** the repo folder (gzip is slow here;
+each step takes minutes, wait for the prompt to return before the next):
 ```bash
-# from your dev machine
-scp -r iai@172.16.17.8:/home/iai/jetson-containers/data/models/huggingface /path/to/backups/
-scp -r iai@172.16.17.8:/home/iai/jetson-containers/data/models/clip /path/to/backups/
+mkdir -p ~/export && cd ~/export
+docker save ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin | gzip > vllm.tar.gz
+docker save nanoowl_orin_nx:v1 | gzip > nanoowl.tar.gz
+docker save da3:orin | gzip > da3.tar.gz
+tar czf data.tar.gz -C ~ jetson-containers/data da3_models
+sha256sum *.tar.gz > SHA256SUMS
+```
+(`vllm_compile_cache` is only a startup-time cache and is root-owned, so it is left out;
+vLLM rebuilds it on first start.)
 
-# the NanoOWL image itself only exists as a local docker image — save it too
-ssh iai@172.16.17.8 "docker save nanoowl_orin_nx:v1 | gzip" > /path/to/backups/nanoowl_orin_nx_v1.tar.gz
+**To the laptop / disk, then to the new board** (`rsync` resumes if interrupted):
+```bash
+rsync -avP iai@<source-ip>:~/export/ ~/jetson_export/
+rsync -avP ~/jetson_export/ iai@<new-ip>:~/export/
 ```
 
-To restore onto a freshly flashed board (no internet needed): `scp` these back into
-place at the same paths, `docker load < nanoowl_orin_nx_v1.tar.gz`, then run the
-commands in sections 1–2 above as normal — they'll find the caches already warm.
+**On the new board** (needs JetPack, Docker with the nvidia runtime, and section 0 done):
+```bash
+cd ~/export && sha256sum -c SHA256SUMS
+for f in vllm nanoowl da3; do gunzip -c $f.tar.gz | docker load; done
+tar xzf data.tar.gz -C ~
+```
+Then run sections 1, 2 and 5 in that order (vLLM first — see section 1). Per board:
+delete the copied `~/da3_models/*/*.engine` and rebuild it with the `trtexec` step in
+section 5 (engines are tied to the exact GPU/TensorRT), set the new IP, and put that
+camera's calibration in `cam.yaml`.
 
 ---
 
 ## Known issues / not yet set up on this board
 
-- **Depth Anything v3** (`--depth-endpoint`) is not installed here — `comm_manager_vllm.py`
-  logs a harmless connection-refused error for it and continues without depth data.
 - NanoOWL prompt quality depends on caption phrasing from the VLM; bare nouns
   ("chair") detect worse than templated phrases ("a photo of a chair"). The VLM's
   bullet-list prompt in `comm_manager_vllm.py`'s `call_vlm()` already asks for simple
