@@ -89,18 +89,60 @@ class Item:
 # -----------------
 
 def _depth_variant(path: Path) -> Optional[Path]:
-    parent = path.parent
+    """DA3 writes <run>_depth/<stem>_depth.jpg next to <run>. The scanned folder may be
+    <run>, <run>_ann, or a 'latest' symlink to either, so try all of those."""
+    parent = path.resolve().parent
     stem = path.stem
+    if stem.endswith("_ann"):
+        stem = stem[:-4]
 
-    sibling_depth_dir = parent.with_name(parent.name + "_depth")
-    if sibling_depth_dir.exists() and sibling_depth_dir.is_dir():
-        for cand in [
-            sibling_depth_dir / (stem + "_depth.png"),
-            sibling_depth_dir / (stem + "_depth.jpg"),
-        ]:
-            if cand.exists():
-                return cand
+    names = [parent.name]
+    if parent.name.endswith("_ann"):
+        names.append(parent.name[:-4])
+
+    for name in names:
+        d = parent.with_name(name + "_depth")
+        if d.is_dir():
+            for cand in (d / (stem + "_depth.jpg"), d / (stem + "_depth.png")):
+                if cand.exists():
+                    return cand
     return None
+
+
+def _npy_depth_png(img_path: Path, rel_root: Path) -> Optional[Path]:
+    """Render a companion DA3 .npy depth array as a cached colorized PNG.
+
+    comm_manager's "latest_ann" output only ever contains RGB+JSON (no depth) —
+    so if the .npy isn't next to img_path, fall back to the raw dome-capture
+    session ("latest") which has the matching-stem .npy from the same flight.
+    """
+    cache_path = img_path.parent / f"{img_path.stem}_depth.png"
+
+    npy_candidates = [img_path.parent / f"{img_path.stem}.npy"]
+    latest_raw = rel_root / "latest"
+    if latest_raw.exists():
+        npy_candidates.append(latest_raw.resolve() / f"{img_path.stem}.npy")
+    npy_path = next((c for c in npy_candidates if c.exists()), None)
+    if npy_path is None:
+        return None
+
+    if cache_path.exists() and cache_path.stat().st_mtime >= npy_path.stat().st_mtime:
+        return cache_path
+
+    try:
+        import numpy as np
+        import cv2
+        depth = np.load(str(npy_path))
+        if depth.ndim == 3:
+            depth = depth[..., 0]
+        depth = np.nan_to_num(depth.astype("float32"), nan=0.0, posinf=0.0, neginf=0.0)
+        depth_norm = (np.clip(depth, 0.0, 5.0) / 5.0 * 255.0).astype("uint8")
+        colored = cv2.applyColorMap(depth_norm, cv2.COLORMAP_MAGMA)
+        cv2.imwrite(str(cache_path), colored)
+        return cache_path
+    except Exception as e:
+        print(f"[depth] failed to render {npy_path}: {e}")
+        return None
 
 
 
@@ -111,7 +153,8 @@ def _extract_vlm_terms(doc: Dict) -> List[str]:
             seen = set()
             out = []
             for t in terms:
-                s = str(t).strip()
+                s = re.sub(r"^(a|an|the)\s+", "", str(t).strip(), flags=re.I)
+                s = s.replace("<", "").replace(">", "").strip()
                 if s and s not in seen:
                     seen.add(s)
                     out.append(s)
@@ -161,8 +204,14 @@ def _ann_variant(path: Path) -> Path:
 
 
 def _latest_run_dir(root: Path) -> Optional[Path]:
-    latest = root / "latest"
-    return latest if latest.exists() and latest.is_dir() else None
+    # Prefer "latest_ann" (comm_manager's annotated output — VLM captions + OWL
+    # boxes) since that's what this display is for; fall back to "latest" (the
+    # raw dome-capture session) for roots that predate the latest_ann split.
+    for name in ("latest_ann", "latest"):
+        cand = root / name
+        if cand.exists() and cand.is_dir():
+            return cand
+    return None
     """Return newest immediate subdirectory under root (by ctime)."""
     try:
         subdirs = [d for d in root.iterdir() if d.is_dir()]
@@ -212,7 +261,7 @@ def _extract_text(doc: dict) -> str:
 def _collect_items(root: Path, rel_root: Path) -> List[Item]:
     items: List[Item] = []
     seen_keys = set()  
-    for img_path in sorted(root.glob("**/*")):
+    for img_path in root.glob("**/*"):
         if not img_path.is_file():
             continue
         if not _is_image(img_path):
@@ -224,8 +273,6 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
 
         if img_path.stem.endswith("_ann"):
             continue
-
-        print(f"[_collect_items] Found image: {img_path}")
 
         ann_path = _ann_variant(img_path)
         use_path = ann_path if ann_path.exists() else img_path
@@ -259,7 +306,7 @@ def _collect_items(root: Path, rel_root: Path) -> List[Item]:
             except Exception:
                 text = "(failed to read/parse JSON)"
 
-        depth_path = _depth_variant(img_path)
+        depth_path = _depth_variant(img_path) or _npy_depth_png(img_path, rel_root)
         depth_rel = str(depth_path.relative_to(rel_root)) if depth_path else None
 
         items.append(Item(
@@ -377,7 +424,7 @@ INDEX_HTML = r"""
     .badge { background:#0ea5b7; color:#002227; padding:2px 8px; border-radius:999px; font-weight:700; font-size:12px; }
     .grid{
     display:grid;
-    grid-template-columns: 1fr;     
+    grid-template-columns: repeat(4, 1fr);
     gap:16px;
     padding:18px;
     width:100%;
@@ -404,7 +451,7 @@ INDEX_HTML = r"""
     .footer { color:#9ca3af; font-size:12px; padding:6px 18px 14px; text-align:center; }
 
     /* Modal */
-    .modal { position:fixed; inset:0; display:none; background:rgba(0,0,0,.5); align-items:center; justify-content:center; padding:20px; }
+    .modal { position:fixed; inset:0; display:none; background:rgba(0,0,0,.5); align-items:center; justify-content:center; padding:20px; z-index:9999; }
     .modal.open { display:flex; }
     .modal-card { max-width:1100px; width:100%; max-height:90vh; background:#0b1220; border:1px solid #253044; border-radius:18px; overflow:hidden; display:grid; grid-template-columns: 1.1fr 0.9fr; }
     .modal-left { background:#0a0f1b; border-right:1px solid #1e293b; display:flex; align-items:center; justify-content:center; }
@@ -451,7 +498,10 @@ INDEX_HTML = r"""
     border-top: 1px solid #111827;
     background: rgba(2,6,23,.35);
     }
-    .tile-media { aspect-ratio: 16 / 9; }
+    .grid { max-width:2000px !important; }
+    @media (max-width:1300px){ .grid{ grid-template-columns: repeat(3, 1fr) !important; } }
+    @media (max-width:900px){ .grid{ grid-template-columns: repeat(2, 1fr) !important; } }
+    .tile-media { aspect-ratio: 16 / 9; position:relative; overflow:hidden; }
     .tile-media img { width:100%; height:100%; object-fit:cover; }
     /* --- depth+ann overlay --- */
 
@@ -492,12 +542,25 @@ INDEX_HTML = r"""
     <span class="badge" id="count">0</span>
     <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
       <small style="color:var(--muted)">Auto-refresh <b id="interval"></b> sec</small>
+      <button class="btn" id="roomMapBtn">🗺️ Room Map</button>
       <button class="btn" id="refreshBtn">Refresh now</button>
     </div>
   </header>
 
   <main class="grid" id="grid"></main>
   <div class="footer">Serving images + metadata from your ingested folder • VLM on Jetson ♥</div>
+
+  <div class="modal" id="roomMapModal">
+    <div class="modal-card" style="grid-template-columns: 1fr; max-width: 1400px; max-height: 90vh;">
+      <div class="modal-left" style="position: relative; padding: 12px;">
+        <button class="close" id="roomMapCloseBtn" style="position:absolute; top:8px; right:8px; z-index:2;">×</button>
+        <img id="roomMapImg" alt="room map" style="max-width:100%; max-height:85vh; width:auto; height:auto; object-fit:contain;" />
+        <div id="roomMapEmpty" style="display:none; color:#e5e7eb; padding:24px; text-align:center;">
+          No room map yet — run Room Mapper, then click this button again.
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="modal" id="modal">
     <div class="modal-card">
@@ -530,9 +593,10 @@ INDEX_HTML = r"""
     }
 
     // build a chip row (LLM only)
+    function esc(v){ return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function chipRow(title, arr){
       if(!arr || !arr.length) return '';
-      const chips = arr.map(x => `<span class="chip" title="${x}">${x}</span>`).join('');
+      const chips = arr.map(x => `<span class="chip" title="${esc(x)}">${esc(x)}</span>`).join('');
       return `<div class="chips"><span class="chips-title">${title}</span>${chips}</div>`;
     }
 
@@ -616,6 +680,22 @@ INDEX_HTML = r"""
     });
     document.getElementById('modal').addEventListener('click', (e)=>{
       if(e.target.id === 'modal') document.getElementById('modal').classList.remove('open');
+    });
+
+    document.getElementById('roomMapBtn').addEventListener('click', ()=>{
+      const img = document.getElementById('roomMapImg');
+      const empty = document.getElementById('roomMapEmpty');
+      img.style.display = 'block';
+      empty.style.display = 'none';
+      img.onerror = ()=>{ img.style.display = 'none'; empty.style.display = 'block'; };
+      img.src = '/img/latest_room_map/map_with_objects.png?t=' + Date.now();  // cache-bust
+      document.getElementById('roomMapModal').classList.add('open');
+    });
+    document.getElementById('roomMapCloseBtn').addEventListener('click', ()=>{
+      document.getElementById('roomMapModal').classList.remove('open');
+    });
+    document.getElementById('roomMapModal').addEventListener('click', (e)=>{
+      if(e.target.id === 'roomMapModal') document.getElementById('roomMapModal').classList.remove('open');
     });
 
     start();

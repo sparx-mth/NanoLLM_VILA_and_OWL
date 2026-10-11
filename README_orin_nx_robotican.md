@@ -74,10 +74,19 @@ docker run -d --restart unless-stopped --name vllm_qwen \
   ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin \
   vllm serve Qwen/Qwen2-VL-2B-Instruct \
     --port 8080 \
-    --gpu-memory-utilization 0.62 \
-    --max-model-len 4096 \
+    --gpu-memory-utilization 0.55 \
+    --max-model-len 2048 \
+    --max-num-seqs 4 \
+    --limit-mm-per-prompt '{"image":1,"video":0}' \
     --trust-remote-code
 ```
+
+These values are tuned so vLLM, NanoOWL and DA3 all fit in the 15.6 GB together. At
+`0.62` / 4096 it failed with `ValueError: ... KV cache is needed, which is larger than the
+available KV cache memory` once DA3 was loaded (vLLM profiles a video input by default,
+reserving memory the pipeline never uses; `video:0` removes that). Start vLLM **first**,
+then NanoOWL, then DA3 — after a reboot Docker restarts containers in no fixed order, so
+check this on the first boot.
 
 Watch it come up:
 ```bash
@@ -203,6 +212,66 @@ python3 display_server.py --root /home/iai/captures/R1 --host 0.0.0.0 --port 809
 
 Open in a browser: `http://172.16.17.8:8090` (or `http://192.168.130.2:8090` once on
 the drone).
+
+---
+
+## 5. **Depth Anything 3 (metric depth HTTP server)**
+
+`depth_anything_http_server` (from the `daphnaa/ros2-depth-anything-v3-trt` fork, pinned
+at `52131cc`) running in a container built from `docker/da3/`. Endpoint:
+`POST http://127.0.0.1:5070/bbox_depth` — the same API `comm_manager_vllm.py` calls via
+`--depth-endpoint`. Model: `DA3METRIC-LARGE` at 252x448 (fp16, ~90 ms/inference, ~0.7 GB GPU).
+
+**TensorRT engines are device-specific** — never copy an `.engine` from the AGX; copy the
+`.onnx` + `.onnx.data` and build the engine on this board. The ONNX looks for its weights
+under the *original* export name `DA3METRIC-LARGE.onnx.data`, so keep one folder per
+resolution and name the data file exactly that.
+
+Frames are 640x360, so the server runs with `--tiling 0` (one inference per frame) and a
+camera YAML for that size (`docker/da3/camera_info_640x360.yaml` = the 4K calibration
+divided by 6). **That YAML is only right if the frames come from that same camera** — metric
+depth is scaled by the focal length, so use the real camera's calibration otherwise. The
+loader reads `image_width`, `image_height` and `camera_matrix.data` (9 values), not `fx`/`fy`.
+
+```bash
+# 1. image (needs internet once; docker/da3 is deployed with the repo)
+cd ~/NanoLLM_VILA_and_OWL/docker/da3 && docker build -t da3:orin .
+
+# 2. model folder: ONNX + data (data file renamed!) + camera YAML
+mkdir -p ~/da3_models/L-252x448
+#   DA3METRIC-LARGE.252x448.onnx       -> ~/da3_models/L-252x448/
+#   DA3METRIC-LARGE.252x448.onnx.data  -> ~/da3_models/L-252x448/DA3METRIC-LARGE.onnx.data
+cp ~/NanoLLM_VILA_and_OWL/docker/da3/camera_info_640x360.yaml ~/da3_models/L-252x448/cam.yaml
+
+# 3. build the engine on this board
+M=~/da3_models/L-252x448; NAME=DA3METRIC-LARGE.252x448
+docker run --rm --runtime nvidia -v $M:/models da3:orin \
+  /usr/src/tensorrt/bin/trtexec --onnx=/models/$NAME.onnx \
+  --saveEngine=/models/$NAME.fp16.engine --fp16
+
+# 4. run
+docker run -d --restart unless-stopped --name da3 --runtime nvidia --network host \
+  -v ~/da3_models/L-252x448:/models -v /home/iai/captures:/home/iai/captures \
+  da3:orin ros2 run depth_anything_v3 depth_anything_http_server \
+  --model /models/$NAME.fp16.engine --camera-yaml /models/cam.yaml \
+  --max-depth 7.0 --host 0.0.0.0 --port 5070 --save-depth --tiling 0
+```
+
+The server writes the depth colormap to `<image_dir>_depth/<name>_depth.jpg`, with
+`image_dir` taken from the request and resolved **inside the container** — hence the
+`/home/iai/captures` mount at the identical path (files are written as root). Without it the
+output stays in the container's own filesystem. Check with
+`docker logs da3 | grep -E "SAVE|NOT SAVED"`.
+
+Verified on the board: build, engine, server start, and a 640x360 request (`200`, ~0.14 s).
+Not yet verified: the `/home/iai/captures` mount and `comm_manager_vllm.py --depth-endpoint
+http://127.0.0.1:5070/bbox_depth` end to end.
+
+Build notes (already handled in `docker/da3/Dockerfile`): the fork tests an undefined
+`TENSORRT_VERSION_MAJOR` so it takes the TensorRT<8 path (`buildEngineWithConfig`, removed in
+TRT 10) — patched to `NV_TENSORRT_MAJOR`; and `libnvinfer` references DLA libs that only
+exist under `--runtime nvidia`, so the build links with `--allow-shlib-undefined`. Do **not**
+`sed` the `cv_bridge` includes — the fork ships its own shim for that.
 
 ---
 

@@ -1,0 +1,13 @@
+# 640x360 frames = the 4K camera (camera_info_4k.yaml, 3840x2160) downscaled by 6.
+# ONLY valid if the 640x360 images come from that same camera/FOV. For a different
+# camera (e.g. the drone), replace the camera_matrix with its own calibration at 640x360.
+# The server reads image_width/image_height and camera_matrix.data (3x3, row-major).
+image_width: 640
+image_height: 360
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [403.379145, 0.0, 312.618147,
+         0.0, 400.651291, 200.906738,
+         0.0, 0.0, 1.0]

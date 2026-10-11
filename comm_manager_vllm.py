@@ -150,6 +150,9 @@ def caption_to_owl_prompts(caption: str) -> list[str]:
         # (optional) keep simple
         s = s.replace('"', "").replace("'", "").strip()
 
+        # small VLMs sometimes echo the "<object>" placeholder from the prompt
+        s = s.replace("<", "").replace(">", "")
+
         # the VLM sometimes lists objects comma-separated on one line
         # instead of one per line, so split each line on commas too
         for part in s.split(","):
