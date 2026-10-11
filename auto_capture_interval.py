@@ -30,19 +30,25 @@ python3 auto_capture_interval.py --root /home/user/jetson-containers/data/R1 --i
 
 
 # --- Camera Thread ---
-def camera_stream_thread(device=0):
+def camera_stream_thread(device=0, width=3840, height=2160, mjpg=False):
     global latest_frame, running
-    print("[Camera] Connecting...")
-    cap = cv2.VideoCapture(device)
+    print(f"[Camera] Connecting to {device}...")
+    # A device path (e.g. /dev/HD_CAMERA) needs the V4L2 backend; an index works as before.
+    cap = cv2.VideoCapture(device, cv2.CAP_V4L2) if isinstance(device, str) else cv2.VideoCapture(device)
 
-    # Try setting 4K
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+    if mjpg:  # many USB cameras only reach HD resolutions in MJPG mode
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    if width and height:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
     if not cap.isOpened():
         print("Error: Could not open camera.")
         running = False
         return
+
+    print(f"[Camera] Streaming at {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+          f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
 
     print("[Camera] Streaming...")
 
@@ -129,16 +135,29 @@ def main():
     parser.add_argument("--root", default=DEFAULT_ROOT_DIR, help="Root directory for captures")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="Seconds between captures")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Images per session folder")
-    parser.add_argument("--device", type=int, default=0, help="Camera device index (default: 0)")
+    parser.add_argument("--device", default="0",
+                        help="Camera device index or path, e.g. 0 or /dev/HD_CAMERA (default: 0)")
+    parser.add_argument("--width", type=int, default=3840, help="Requested frame width (0 = camera default)")
+    parser.add_argument("--height", type=int, default=2160, help="Requested frame height (0 = camera default)")
+    parser.add_argument("--mjpg", action="store_true", help="Request MJPG from the camera")
 
     args = parser.parse_args()
     root_path = Path(args.root)
     root_path.mkdir(parents=True, exist_ok=True)
 
-    cam_thread = threading.Thread(target=camera_stream_thread, kwargs={"device": args.device}, daemon=True)
+    # OpenCV only accepts /dev/videoN, not udev symlinks such as /dev/HD_CAMERA
+    device = int(args.device) if args.device.isdigit() else os.path.realpath(args.device)
+    cam_thread = threading.Thread(
+        target=camera_stream_thread,
+        kwargs={"device": device, "width": args.width, "height": args.height, "mjpg": args.mjpg},
+        daemon=True)
     cam_thread.start()
 
     time.sleep(2)
+
+    if not running:
+        print("Camera failed to open - nothing to capture.")
+        return
 
     print("\n=================================================")
     print(f" Auto Capture every {args.interval}s | batch={args.batch_size} images/folder")

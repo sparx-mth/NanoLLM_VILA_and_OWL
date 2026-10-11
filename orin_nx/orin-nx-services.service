@@ -1,0 +1,13 @@
+[Unit]
+Description=Start vLLM, NanoOWL and DA3 containers in order
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=1200
+ExecStart=/home/iai/NanoLLM_VILA_and_OWL/orin_nx/start_services.sh
+
+[Install]
+WantedBy=multi-user.target

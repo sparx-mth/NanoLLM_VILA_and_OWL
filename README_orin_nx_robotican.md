@@ -279,6 +279,80 @@ exist under `--runtime nvidia`, so the build links with `--allow-shlib-undefined
 
 ---
 
+## 6. **Startup order (systemd service)** — required for a reliable boot
+
+vLLM, NanoOWL and DA3 share the board's 15.6 GB, and vLLM sizes its GPU budget at startup.
+If Docker restarts all three at once after a reboot, NanoOWL/DA3 load while vLLM is still
+profiling and vLLM dies with `Free memory ... less than desired GPU memory utilization` /
+`No available memory for the cache blocks`, then restart-loops. So only `vllm_qwen` keeps a
+Docker restart policy; `orin_nx/start_services.sh` starts the other two **after** vLLM
+answers (it also drops the page cache, which CUDA does not count as free on Jetson).
+
+```bash
+chmod +x ~/NanoLLM_VILA_and_OWL/orin_nx/start_services.sh
+docker update --restart=no now_eng da3          # Docker must not start these early
+sudo cp ~/NanoLLM_VILA_and_OWL/orin_nx/orin-nx-services.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable orin-nx-services
+```
+
+Check after a reboot (cold boot to all three answering took ~7.5 min, vLLM ~6 of that):
+```bash
+systemctl status orin-nx-services --no-pager | tail -8
+journalctl -u orin-nx-services --no-pager | tail -8
+for p in 8080 5060 5070; do printf "$p: "; curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:$p/; done
+```
+`404` on each port is healthy. The unit's path assumes `/home/iai/NanoLLM_VILA_and_OWL`.
+The unrelated `iai` container (idle, ~20 MB) can keep running.
+
+---
+
+## 7. **Drone camera (USB FHD Camera) and capture**
+
+The camera shows up as **two** device nodes: `/dev/video0` is the capture node (MJPG up to
+1920x1080 @ 30 fps) and `/dev/video1` is its metadata node (no formats). The
+`/dev/HD_CAMERA` udev symlink currently points at `video1` — **wrong**; use `/dev/video0`
+until the rule is fixed (it should match `ATTR{index}=="0"`). OpenCV also cannot open a
+udev symlink by name, so `auto_capture_interval.py` resolves it with `realpath`.
+
+```bash
+v4l2-ctl --list-devices        # find the capture node
+cd ~/NanoLLM_VILA_and_OWL
+python3 auto_capture_interval.py --root /home/iai/captures/R1 \
+  --device /dev/video0 --width 1920 --height 1080 --mjpg --interval 2 --batch-size 20
+```
+It prints `[Camera] Streaming at WxH` (what the camera really gave) and writes timestamped
+session folders plus the `latest` symlink that `comm_manager_vllm.py` reads.
+
+**The lens is a strong fisheye** (barrel distortion, circular vignette). DA3 and its
+focal-length scaling assume a pinhole camera, so depth from these frames is only a rough
+relative map, and `cam.yaml` (the 4K camera's calibration / 6) is wrong for it. For real
+distances: calibrate this camera with OpenCV's fisheye model and undistort before DA3.
+
+The board has no clock source on the drone network, so the time resets at boot; check that
+`latest` still points at the newest run.
+
+---
+
+## 8. **Reaching the board through the RPi**
+
+On the drone network the NX (`192.168.130.2`) is only reachable via the RPi (`192.168.131.103`):
+```bash
+ssh -J rooster@192.168.131.103 iai@192.168.130.2
+scp -J rooster@192.168.131.103 file iai@192.168.130.2:~/NanoLLM_VILA_and_OWL/
+rsync -avP -e "ssh -J rooster@192.168.131.103" ./dir/ iai@192.168.130.2:~/dir/
+```
+The display server uses relative URLs, so a plain port forward works. Start it on the NX
+(`--host 0.0.0.0 --port 8090`, see section 4), then on the laptop leave this running and open
+`http://localhost:8090` (not the RPi's address):
+```bash
+ssh -N -L 8090:192.168.130.2:8090 rooster@192.168.131.103
+```
+`channel N: open failed: Connection refused` in that terminal means the display server is not
+running on the NX. VSCode SFTP (`.vscode/sftp.json`) must point at the same address (plus a
+`hop` for the RPi) or you upload by hand with `scp -J` — `uploadOnSave` only fires on a VSCode save.
+
+---
+
 ## Deploy workflow (editing this repo)
 
 This repo is synced to the Orin NX via the VSCode **SFTP** extension
