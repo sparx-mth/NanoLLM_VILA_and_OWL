@@ -42,9 +42,13 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
      (R1/R3 included), based on the benchmark above. R3 still runs the old `252x448` and
      needs updating; R1 should be set up with `336x602` directly rather than `252x448` first.
    - Compare `DEPTH_ANYTHING` distances to known distances - is either size accurate enough?
-     (Saw some negative depth minimums in R2's debug log, e.g. `depth min=-0.632213` - likely
-     boundary/background noise, not necessarily a problem, but worth checking during this.)
-   - Lens is a fisheye: calibrate (OpenCV fisheye) and undistort before DA3, then fix `cam.yaml`.
+     Saw some negative depth minimums in R2's debug log (e.g. `depth min=-0.632213`) -
+     plausibly explained by the fisheye issue below rather than plain model noise: `cam.yaml`
+     encodes a pinhole model, so peripheral/edge pixels (worst distortion) get a wrong
+     pixel-to-ray mapping, which could produce exactly this kind of implausible depth.
+   - Lens is a fisheye: calibrate (OpenCV fisheye) and undistort before DA3, then fix `cam.yaml`
+     (this is also the real calibration this camera needs - the current one is just the 4K
+     calibration divided by 6, never independently measured for this lens).
 6. Smaller items
    - Fix the `/dev/HD_CAMERA` udev rule (currently -> `video1`, the metadata node; want `video0`).
    - Update README "Known issues" after the above; remove the stale `ollama` service if unused.
