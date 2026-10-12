@@ -188,7 +188,7 @@ python3 comm_manager_vllm.py \
   --nanoowl-endpoint http://127.0.0.1:5060/infer \
   --vllm-url http://127.0.0.1:8080 \
   --vllm-model Qwen/Qwen2-VL-2B-Instruct \
-  --vllm-max-tokens 128 \
+  --vllm-max-tokens 192 \
   --forward-json-url "" \
   --vlm-timeout 60 --retries 3 --retry-sleep 2 \
   --sleep-between 2 --force

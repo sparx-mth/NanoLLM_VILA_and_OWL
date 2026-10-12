@@ -919,7 +919,7 @@ def main():
     p.add_argument("--vllm-url", default=None, help="e.g. http://192.168.131.21:8000") 
     p.add_argument("--vllm-model", required=True, help="model name as served by vLLM")
     p.add_argument("--vllm-timeout", type=float, default=20.0)
-    p.add_argument("--vllm-max-tokens", type=int, default=128)
+    p.add_argument("--vllm-max-tokens", type=int, default=192)
     p.add_argument("--vllm-temperature", type=float, default=0.2)
 
     # nanoowl
