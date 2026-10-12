@@ -456,6 +456,23 @@ cd ~/export && sha256sum -c SHA256SUMS
 for f in vllm nanoowl da3; do gunzip -c $f.tar.gz | docker load; done
 tar xzf data.tar.gz -C ~
 ```
+
+**This export is Docker images and model data only — it does not include this Python repo.**
+Deploy it separately (from your dev machine, since a fresh board likely has no internet/GitHub
+access to `git clone`):
+```bash
+rsync -avz --exclude='.vscode' --exclude='.git' --exclude='.idea' \
+  --exclude='__pycache__' --exclude='venv' --exclude='mission_control/venv' \
+  /path/to/NanoLLM_VILA_and_OWL/ iai@<new-ip>:/home/iai/NanoLLM_VILA_and_OWL/
+```
+Then install its Python deps directly on the board (needed for `comm_manager_vllm.py`/
+`display_server.py`/`auto_capture_interval.py`, sections 3/4/7) — a venv may fail with a
+missing `ensurepip`/`python3-venv` package on this image, in which case fall back to a
+direct user-site install:
+```bash
+pip install --index-url https://pypi.org/simple flask requests opencv-python-headless pyyaml
+```
+
 Then run sections 1, 2 and 5 in that order (vLLM first — see section 1). Per board:
 delete the copied `~/da3_models/*/*.engine` and rebuild it with the `trtexec` step in
 section 5 (engines are tied to the exact GPU/TensorRT), set the new IP, put that

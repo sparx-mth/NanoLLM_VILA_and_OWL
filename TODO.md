@@ -5,10 +5,12 @@ State (2026-10-11): vLLM + NanoOWL + DA3 run together on the NX, start in order 
 Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop (`~/jetson_export`).
 
 1. **Copy the same configuration to Rooster R1 and R2**
-   - Each board needs JetPack, Docker with the nvidia runtime, README section 0 (GUI off), the repo.
-   - `docker load` the 3 images, extract `data.tar.gz` (README "Backups and cloning").
+   - Each board needs JetPack, Docker with the nvidia runtime, README section 0 (GUI off).
+   - `docker load` the 3 images, extract `data.tar.gz`, **and deploy this repo + its Python
+     deps separately** (README "Backups and cloning" — the image/data export does not include
+     the repo; found this the hard way bringing up R2, which had the containers but no code).
    - Per board: new IP, delete the copied DA3 `.engine` and rebuild with `trtexec` (README 5),
-     that camera's `cam.yaml`, install the startup service (README 6).
+     that camera's `cam.yaml`, install the startup service (README 6), the drone-ID banner (README 9).
    - Reach boards through the RPi jump host (README 8).
 2. **Repeat the model + camera tests on each board**
    - `v4l2-ctl --list-devices` — capture node name may differ; capture -> pipeline -> display.
@@ -28,3 +30,19 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
 6. Smaller items
    - Fix the `/dev/HD_CAMERA` udev rule (currently -> `video1`, the metadata node; want `video0`).
    - Update README "Known issues" after the above; remove the stale `ollama` service if unused.
+7. **Clean up the repo** — a lot of what's at the repo root predates the Orin NX pipeline and
+   isn't used by it. Candidates to review (confirm unused elsewhere before deleting, not just
+   assumed):
+   - Duplicate `comm_manager_vllm*`/`display_server*` variants (`comm_manager.py`,
+     `comm_manager_vllm_batch.py`, `comm_manager_vllm_with_scene.py`,
+     `display_server_depth.py`, `display_server_depth_and_one_image.py`,
+     `display_server_pazzle.py`, `display_server_with_scene.py`) vs. the two actually in
+     use (`comm_manager_vllm.py`, `display_server.py`).
+   - `jetson_dashboard.py`, `jetson_tui.py`, `jetson_infra_tui.py` — AGX-era TUI tools.
+   - `VILA/`, `VILA_live_streaming_on_jetson.md` — superseded by the vLLM/Qwen2-VL path.
+   - `LLM/` — prompt-converter code for an unused text-only-LLM step (`comm_manager_vllm.py`'s
+     own `VLLM_URL`/`VLLM_MODEL`/etc. globals are similarly vestigial from this same era).
+   - `room_mapping/`, `mission_control/`, `apriltag/` — separate features, not part of this
+     vision pipeline; confirm whether still used by another workflow before touching.
+   - `comm_timings.log` — a log file, tracked in git; should be gitignored instead.
+   - `demo_with_main*.drawio.png` — old diagrams, confirm still referenced anywhere first.
