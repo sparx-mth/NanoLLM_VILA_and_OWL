@@ -283,26 +283,16 @@ exist under `--runtime nvidia`, so the build links with `--allow-shlib-undefined
 
 ## 6. **Startup order (systemd service)** — required for a reliable boot
 
-vLLM, NanoOWL, DA3 **and `iai`** (the separate ROS2 flight-controller/camera bridge,
-managed by its own pre-existing `iai.service`, not part of this repo) share the board's
-15.6 GB, and vLLM sizes its GPU budget at startup. If anything else loads while vLLM is
-still profiling, vLLM dies with `Free memory ... less than desired GPU memory utilization`
-/ `No available memory for the cache blocks`, then restart-loops. `iai` is light on its own
-and not a real conflict *once vLLM has already claimed its budget* — it's only a problem if
-they start at the same moment, which happens whenever `iai.service`'s own RPi-connectivity
-wait finishes around the same time as a reboot (confirmed live on R2: reconnecting the RPi
-let `iai` start right as vLLM was already up, and the resulting restart raced it down to
-7.99/15.29 GiB free, below vLLM's ~8.4 GiB need).
-
-So only `vllm_qwen` keeps a Docker restart policy; `orin_nx/start_services.sh` starts
-NanoOWL and DA3 **after** vLLM answers, then starts `iai` last of all (it also drops the
-page cache, which CUDA does not count as free on Jetson):
+vLLM, NanoOWL and DA3 share the board's 15.6 GB, and vLLM sizes its GPU budget at startup.
+If Docker restarts all three at once after a reboot, NanoOWL/DA3 load while vLLM is still
+profiling and vLLM dies with `Free memory ... less than desired GPU memory utilization` /
+`No available memory for the cache blocks`, then restart-loops. So only `vllm_qwen` keeps a
+Docker restart policy; `orin_nx/start_services.sh` starts the other two **after** vLLM
+answers (it also drops the page cache, which CUDA does not count as free on Jetson).
 
 ```bash
 chmod +x ~/NanoLLM_VILA_and_OWL/orin_nx/start_services.sh
 docker update --restart=no now_eng da3          # Docker must not start these early
-sudo systemctl disable iai.service              # must not auto-start independently either -
-                                                 # this script starts it explicitly, last
 sudo cp ~/NanoLLM_VILA_and_OWL/orin_nx/orin-nx-services.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable orin-nx-services
 ```
@@ -312,12 +302,20 @@ Check after a reboot (cold boot to all three answering took ~7.5 min, vLLM ~6 of
 systemctl status orin-nx-services --no-pager | tail -8
 journalctl -u orin-nx-services --no-pager | tail -8
 for p in 8080 5060 5070; do printf "$p: "; curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:$p/; done
-docker ps | grep iai   # has no HTTP port to curl; just confirm the container is up
 ```
-`404` on each of the three ports is healthy.  The unit's path assumes
-`/home/iai/NanoLLM_VILA_and_OWL`. `iai` itself still has its own `Restart=always` from
-`iai.service`, so it recovers on its own after this script's initial launch — this just
-controls *when* that initial launch happens, not its ongoing lifecycle.
+`404` on each port is healthy. The unit's path assumes `/home/iai/NanoLLM_VILA_and_OWL`.
+
+**`iai` (the separate ROS2 flight-controller/camera bridge, its own pre-existing
+`iai.service`) is not managed by this script and must not be touched, stopped, or
+reordered.** Seen once on R2: reconnecting the RPi let `iai` start right as vLLM was
+already up, and free memory dropped to 7.99/15.29 GiB — just under vLLM's `0.55`
+utilization requirement of ~8.41 GiB — crashing it. The fix is giving vLLM enough margin to
+tolerate `iai` running alongside, not controlling when `iai` starts:
+```bash
+--gpu-memory-utilization 0.48   # down from 0.55, leaves ~7.3 GiB instead of ~6.9 GiB free
+```
+This hasn't been re-verified with all four running together yet — if it still crashes,
+lower it further rather than touching `iai`.
 
 ---
 
