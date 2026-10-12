@@ -4,13 +4,19 @@ State (2026-10-11): vLLM + NanoOWL + DA3 run together on the NX, start in order 
 (`orin_nx/`), pipeline + display verified end to end with the drone camera.
 Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop (`~/jetson_export`).
 
-1. **Copy the same configuration to Rooster R1 and R2**
-   - Each board needs JetPack, Docker with the nvidia runtime, README section 0 (GUI off).
-   - `docker load` the 3 images, extract `data.tar.gz`, **and deploy this repo + its Python
-     deps separately** (README "Backups and cloning" — the image/data export does not include
-     the repo; found this the hard way bringing up R2, which had the containers but no code).
-   - Per board: new IP, delete the copied DA3 `.engine` and rebuild with `trtexec` (README 5),
-     that camera's `cam.yaml`, install the startup service (README 6), the drone-ID banner (README 9).
+1. **Bring R1 up fresh and update R3** (R2 is now the working reference — see README
+   "Cloning to R1/R3" for the full copy/run/don't-touch checklist)
+   - R1 and R3 both need: JetPack, Docker with the nvidia runtime, README section 0 (GUI off).
+   - Copy from R2: the 3 Docker images, `jetson-containers/data`, and DA3's `336x602` ONNX +
+     `cam.yaml` (not the `.engine` — rebuild that per board). **And this repo itself + its
+     Python deps** — found the hard way bringing up R2, which had the containers but no code,
+     since the image/data export never included it.
+   - Run per board (not copied): `pip install` the repo's deps, the DA3 `trtexec` rebuild
+     (README 5), the drone-ID MOTD/prompt (README 9, identical commands everywhere), the
+     startup service (README 6).
+   - Do NOT copy: each board's own `~/iai_ws/src/docker/.env` (`ROS_DOMAIN_ID`/`DDS_IFACE`
+     are already correct per board) or camera calibration if R1/R3 use a different physical
+     camera unit than R2's.
    - Reach boards through the RPi jump host (README 8).
 2. **Repeat the model + camera tests on each board**
    - `v4l2-ctl --list-devices` — capture node name may differ; capture -> pipeline -> display.
@@ -32,11 +38,9 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
      (~3.85fps), tight 254.5-263.5ms spread (no slow-tail spikes), only ~35ms overhead above
      the raw engine number. Not the pipeline's bottleneck either way - vLLM's own per-frame
      captioning (0.6-1.8s) is slower than DA3 at any of these sizes.
-   - **R2 now runs a different DA3 resolution than documented (`336x602` vs the README's
-     `252x448`)** - R1/R3 (or wherever `252x448` is still in use) are no longer on the
-     "same configuration," which item 1 above assumes. Decide whether to standardize on one
-     resolution across all boards before the R1/R3 rollout, or deliberately let each board's
-     resolution vary (e.g. if their cameras/compute loads differ).
+   - ~~Standardize resolution across boards~~ — decided: **`336x602` for all boards**
+     (R1/R3 included), based on the benchmark above. R3 still runs the old `252x448` and
+     needs updating; R1 should be set up with `336x602` directly rather than `252x448` first.
    - Compare `DEPTH_ANYTHING` distances to known distances - is either size accurate enough?
      (Saw some negative depth minimums in R2's debug log, e.g. `depth min=-0.632213` - likely
      boundary/background noise, not necessarily a problem, but worth checking during this.)

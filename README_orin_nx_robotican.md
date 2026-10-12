@@ -438,11 +438,13 @@ mkdir -p ~/export && cd ~/export
 docker save ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin | gzip > vllm.tar.gz
 docker save nanoowl_orin_nx:v1 | gzip > nanoowl.tar.gz
 docker save da3:orin | gzip > da3.tar.gz
-tar czf data.tar.gz -C ~ jetson-containers/data da3_models
+tar czf data.tar.gz --exclude='*.engine' -C ~ jetson-containers/data da3_models
 sha256sum *.tar.gz > SHA256SUMS
 ```
 (`vllm_compile_cache` is only a startup-time cache and is root-owned, so it is left out;
-vLLM rebuilds it on first start.)
+vLLM rebuilds it on first start. `.engine` files are excluded on purpose — they're tied to
+the exact GPU/TensorRT of the board that built them and must be rebuilt per board, never
+copied; see the `trtexec` step in section 5.)
 
 **To the laptop / disk, then to the new board** (`rsync` resumes if interrupted):
 ```bash
@@ -478,6 +480,18 @@ delete the copied `~/da3_models/*/*.engine` and rebuild it with the `trtexec` st
 section 5 (engines are tied to the exact GPU/TensorRT), set the new IP, put that
 camera's calibration in `cam.yaml`, and set up the drone-ID banner/prompt (section 9)
 so an SSH session always shows which board you're on.
+
+**Standard DA3 resolution across all boards: `336x602`** (benchmarked on R2 — see TODO
+item 5 for the numbers) — set every board up with this size, not the earlier `252x448`.
+
+**Do not copy, even though it'd be convenient to script**:
+- `~/iai_ws/src/docker/.env` — each board's `ROS_DOMAIN_ID`/`DDS_IFACE` is already correct
+  for *that* board; overwriting it with another board's `.env` breaks its ROS2 domain
+  identity (and, per section 9, its drone-ID banner/prompt and captures path too, since
+  both derive from this same file).
+- Camera calibration (`cam.yaml`), if the target board uses a physically different camera
+  unit than the one `camera_info_640x360.yaml` was derived from — reusing another camera's
+  calibration is only a good approximation when the camera model/lens genuinely matches.
 
 ---
 
