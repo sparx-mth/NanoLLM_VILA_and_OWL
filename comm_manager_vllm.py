@@ -150,7 +150,11 @@ def caption_to_owl_prompts(caption: str) -> list[str]:
         # (optional) keep simple
         s = s.replace('"', "").replace("'", "").strip()
 
-        # small VLMs sometimes echo the "<object>" placeholder from the prompt
+        # on harder frames the VLM sometimes answers in "<object>name</object>"
+        # tags instead of the requested bullet format - unwrap to just the name
+        s = re.sub(r"<(\w+)>(.*?)</\1>", r"\2", s)
+
+        # small VLMs sometimes echo the bare "<object>" placeholder from the prompt
         s = s.replace("<", "").replace(">", "")
 
         # the VLM sometimes lists objects comma-separated on one line
