@@ -3,5 +3,8 @@ Description=Prune old Orin NX capture runs (count-based retention)
 
 [Service]
 Type=oneshot
-# Second arg is how many most-recent run folders to keep. Adjust the path per board.
-ExecStart=/home/iai/NanoLLM_VILA_and_OWL/orin_nx/cleanup_frames.sh /home/iai/captures/R1 20
+# Derives the captures path from this board's own ROS_DOMAIN_ID (same convention as the
+# drone-ID MOTD/prompt, README section 9) so this file is identical on every board - no
+# per-board path edit needed. Second number is how many most-recent run folders to keep.
+ExecStart=/bin/bash -c '/home/iai/NanoLLM_VILA_and_OWL/orin_nx/cleanup_frames.sh \
+  /home/iai/captures/R$(grep "^ROS_DOMAIN_ID=" /home/iai/iai_ws/src/docker/.env | cut -d= -f2) 20'

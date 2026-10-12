@@ -182,7 +182,7 @@ cd ~/NanoLLM_VILA_and_OWL
 python3 comm_manager_vllm.py \
   --no-config \
   --host 0.0.0.0 --port 5050 \
-  --captures-root /home/iai/captures/R1 \
+  --captures-root /home/iai/captures/R${DRONE_ID} \
   --endpoint http://127.0.0.1:8080 \
   --nanoowl-endpoint http://127.0.0.1:5060/infer \
   --vllm-url http://127.0.0.1:8080 \
@@ -207,7 +207,7 @@ time you want to process a fresh batch of frames.
 
 ```bash
 cd ~/NanoLLM_VILA_and_OWL
-python3 display_server.py --root /home/iai/captures/R1 --host 0.0.0.0 --port 8090 --latest-only
+python3 display_server.py --root /home/iai/captures/R${DRONE_ID} --host 0.0.0.0 --port 8090 --latest-only
 ```
 
 Open in a browser: `http://172.16.17.8:8090` (or `http://192.168.130.2:8090` once on
@@ -317,7 +317,7 @@ udev symlink by name, so `auto_capture_interval.py` resolves it with `realpath`.
 ```bash
 v4l2-ctl --list-devices        # find the capture node
 cd ~/NanoLLM_VILA_and_OWL
-python3 auto_capture_interval.py --root /home/iai/captures/R1 \
+python3 auto_capture_interval.py --root /home/iai/captures/R${DRONE_ID} \
   --device /dev/video0 --width 640 --height 360 --interval 2 --batch-size 20
 ```
 640x360 (the default) is the resolution `docker/da3/camera_info_640x360.yaml` was calibrated
@@ -384,8 +384,8 @@ EOF
 sudo chmod +x /etc/update-motd.d/99-drone-id
 
 cat >> ~/.bashrc <<'EOF'
-_drone_id=$(grep '^ROS_DOMAIN_ID=' "$HOME/iai_ws/src/docker/.env" 2>/dev/null | cut -d= -f2)
-PS1="[R${_drone_id:-?}] ${PS1}"
+export DRONE_ID=$(grep '^ROS_DOMAIN_ID=' "$HOME/iai_ws/src/docker/.env" 2>/dev/null | cut -d= -f2)
+PS1="[R${DRONE_ID:-?}] ${PS1}"
 EOF
 source ~/.bashrc   # applies immediately; the MOTD banner shows on the next fresh login
 ```
@@ -395,6 +395,10 @@ read `.env` dynamically rather than hardcoding a board name, so this is the same
 commands on every board — it just reflects whatever that board's own `.env` already says.
 Verified on R2: prompt becomes `[R2] iai@ubuntu:~$` (the MOTD needed the `$HOME` fix above
 after it first showed `R?` — PAM's root context was the culprit).
+
+**`$DRONE_ID` is also the single source of truth for this board's captures path** — every
+`--captures-root`/`--root` below uses `/home/iai/captures/R${DRONE_ID}`, so a board's frames
+always live under its own real drone number rather than a leftover generic `R1` folder name.
 
 ---
 
