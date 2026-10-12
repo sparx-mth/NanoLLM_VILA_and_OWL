@@ -25,7 +25,21 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
    confirmed available at a full 30fps in MJPG. Still open: whether full-size originals
    are needed later (not currently kept anywhere if so).
 5. **Inspect depth values and the DA3 size**
-   - Compare `DEPTH_ANYTHING` distances to known distances; is 252x448 enough?
+   - Resolution benchmarked on R2 (raw `trtexec`, isolated): `336x602` 224ms/4.46fps vs
+     `364x644` 275ms/3.63fps. Chose `336x602` for the speed margin on a board that also runs
+     vLLM+NanoOWL concurrently. Real HTTP-serving benchmark (20 requests, `/bbox_depth`,
+     actual frame + NanoOWL detections) confirmed this holds up in practice: avg 259.5ms/req
+     (~3.85fps), tight 254.5-263.5ms spread (no slow-tail spikes), only ~35ms overhead above
+     the raw engine number. Not the pipeline's bottleneck either way - vLLM's own per-frame
+     captioning (0.6-1.8s) is slower than DA3 at any of these sizes.
+   - **R2 now runs a different DA3 resolution than documented (`336x602` vs the README's
+     `252x448`)** - R1/R3 (or wherever `252x448` is still in use) are no longer on the
+     "same configuration," which item 1 above assumes. Decide whether to standardize on one
+     resolution across all boards before the R1/R3 rollout, or deliberately let each board's
+     resolution vary (e.g. if their cameras/compute loads differ).
+   - Compare `DEPTH_ANYTHING` distances to known distances - is either size accurate enough?
+     (Saw some negative depth minimums in R2's debug log, e.g. `depth min=-0.632213` - likely
+     boundary/background noise, not necessarily a problem, but worth checking during this.)
    - Lens is a fisheye: calibrate (OpenCV fisheye) and undistort before DA3, then fix `cam.yaml`.
 6. Smaller items
    - Fix the `/dev/HD_CAMERA` udev rule (currently -> `video1`, the metadata node; want `video0`).
