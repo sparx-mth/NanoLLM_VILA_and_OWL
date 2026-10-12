@@ -369,7 +369,9 @@ prompt shows this as `[R3@3]`: drone R3, domain 3).
 ```bash
 sudo tee /etc/update-motd.d/99-drone-id > /dev/null <<'EOF'
 #!/bin/bash
-ENV_FILE="$HOME/iai_ws/src/docker/.env"
+# /etc/update-motd.d/ scripts run via PAM as root, not as the login user, so $HOME
+# here is /root, not /home/iai - hardcode the path rather than relying on $HOME.
+ENV_FILE="/home/iai/iai_ws/src/docker/.env"
 if [ -f "$ENV_FILE" ]; then
   DOMAIN=$(grep '^ROS_DOMAIN_ID=' "$ENV_FILE" | cut -d= -f2)
 fi
@@ -388,9 +390,11 @@ EOF
 source ~/.bashrc   # applies immediately; the MOTD banner shows on the next fresh login
 ```
 
-Both read `.env` dynamically rather than hardcoding a board name, so this is the same two
+The `.bashrc` snippet keeps `$HOME` since it genuinely runs as the login user there. Both
+read `.env` dynamically rather than hardcoding a board name, so this is the same two
 commands on every board — it just reflects whatever that board's own `.env` already says.
-Verified on R2: prompt becomes `[R2] iai@ubuntu:~$`.
+Verified on R2: prompt becomes `[R2] iai@ubuntu:~$` (the MOTD needed the `$HOME` fix above
+after it first showed `R?` — PAM's root context was the culprit).
 
 ---
 
