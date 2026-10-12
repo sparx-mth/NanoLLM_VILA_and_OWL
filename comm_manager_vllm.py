@@ -154,7 +154,12 @@ def caption_to_owl_prompts(caption: str) -> list[str]:
         # tags instead of the requested bullet format - unwrap to just the name
         s = re.sub(r"<(\w+)>(.*?)</\1>", r"\2", s)
 
-        # small VLMs sometimes echo the bare "<object>" placeholder from the prompt
+        # a response can get cut off mid-tag (e.g. "<object>chair" with no closing
+        # tag, max_tokens reached) - drop the whole dangling tag, not just its brackets,
+        # so it doesn't fuse into the content ("<object>chair" -> "objectchair" bug)
+        s = re.sub(r"</?[a-zA-Z]+>", "", s)
+
+        # small VLMs sometimes echo a bare "<"/">" placeholder character too
         s = s.replace("<", "").replace(">", "")
 
         # the VLM sometimes lists objects comma-separated on one line
@@ -174,6 +179,11 @@ def caption_to_owl_prompts(caption: str) -> list[str]:
 
             # remove trailing punctuation
             part = part.strip(" .,:;")
+
+            # drop a bare leftover article - a malformed "A <object>" bullet with
+            # no object name attached, not a real prompt
+            if part in ("a", "an"):
+                continue
 
             if part:
                 lines.append(part)
