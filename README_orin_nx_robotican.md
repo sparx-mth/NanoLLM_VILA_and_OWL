@@ -318,8 +318,12 @@ udev symlink by name, so `auto_capture_interval.py` resolves it with `realpath`.
 v4l2-ctl --list-devices        # find the capture node
 cd ~/NanoLLM_VILA_and_OWL
 python3 auto_capture_interval.py --root /home/iai/captures/R1 \
-  --device /dev/video0 --width 1920 --height 1080 --mjpg --interval 2 --batch-size 20
+  --device /dev/video0 --width 640 --height 360 --interval 2 --batch-size 20
 ```
+640x360 (the default) is the resolution `docker/da3/camera_info_640x360.yaml` was calibrated
+for — capturing at a different size means DA3's metric depth needs a matching recalibration.
+Confirmed available at a full 30fps in MJPG via `v4l2-ctl --list-formats-ext` (MJPG is on by
+default; pass `--no-mjpg` to disable it).
 It prints `[Camera] Streaming at WxH` (what the camera really gave) and writes timestamped
 session folders plus the `latest` symlink that `comm_manager_vllm.py` reads.
 
@@ -350,6 +354,43 @@ ssh -N -L 8090:192.168.130.2:8090 rooster@192.168.131.103
 `channel N: open failed: Connection refused` in that terminal means the display server is not
 running on the NX. VSCode SFTP (`.vscode/sftp.json`) must point at the same address (plus a
 `hop` for the RPi) or you upload by hand with `scp -J` — `uploadOnSave` only fires on a VSCode save.
+
+---
+
+## 9. **Identifying which drone you're on**
+
+R1/R2/R3's Orin NX boards are identical clones — same IP (`192.168.130.2`), same username
+(`iai`), same hostname (`ubuntu`) — so a bare `iai@ubuntu:~$` prompt gives no clue which
+board an SSH session is actually on. Rather than inventing a separate label, reuse the
+`ROS_DOMAIN_ID` the existing `iai` ROS2 container already reads from `~/iai_ws/src/docker/.env`
+at build time — in this fleet's convention it already equals the drone number (the RPi's own
+prompt shows this as `[R3@3]`: drone R3, domain 3).
+
+```bash
+sudo tee /etc/update-motd.d/99-drone-id > /dev/null <<'EOF'
+#!/bin/bash
+ENV_FILE="$HOME/iai_ws/src/docker/.env"
+if [ -f "$ENV_FILE" ]; then
+  DOMAIN=$(grep '^ROS_DOMAIN_ID=' "$ENV_FILE" | cut -d= -f2)
+fi
+echo
+echo " ##########################"
+echo " ####   THIS IS  R${DOMAIN:-?}    ####"
+echo " ##########################"
+echo
+EOF
+sudo chmod +x /etc/update-motd.d/99-drone-id
+
+cat >> ~/.bashrc <<'EOF'
+_drone_id=$(grep '^ROS_DOMAIN_ID=' "$HOME/iai_ws/src/docker/.env" 2>/dev/null | cut -d= -f2)
+PS1="[R${_drone_id:-?}] ${PS1}"
+EOF
+source ~/.bashrc   # applies immediately; the MOTD banner shows on the next fresh login
+```
+
+Both read `.env` dynamically rather than hardcoding a board name, so this is the same two
+commands on every board — it just reflects whatever that board's own `.env` already says.
+Verified on R2: prompt becomes `[R2] iai@ubuntu:~$`.
 
 ---
 
@@ -403,8 +444,9 @@ tar xzf data.tar.gz -C ~
 ```
 Then run sections 1, 2 and 5 in that order (vLLM first — see section 1). Per board:
 delete the copied `~/da3_models/*/*.engine` and rebuild it with the `trtexec` step in
-section 5 (engines are tied to the exact GPU/TensorRT), set the new IP, and put that
-camera's calibration in `cam.yaml`.
+section 5 (engines are tied to the exact GPU/TensorRT), set the new IP, put that
+camera's calibration in `cam.yaml`, and set up the drone-ID banner/prompt (section 9)
+so an SSH session always shows which board you're on.
 
 ---
 

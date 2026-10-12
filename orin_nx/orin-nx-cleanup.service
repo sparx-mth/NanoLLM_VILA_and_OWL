@@ -1,0 +1,7 @@
+[Unit]
+Description=Prune old Orin NX capture runs (count-based retention)
+
+[Service]
+Type=oneshot
+# Second arg is how many most-recent run folders to keep. Adjust the path per board.
+ExecStart=/home/iai/NanoLLM_VILA_and_OWL/orin_nx/cleanup_frames.sh /home/iai/captures/R1 20

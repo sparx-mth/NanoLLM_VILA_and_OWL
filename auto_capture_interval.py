@@ -137,9 +137,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Images per session folder")
     parser.add_argument("--device", default="0",
                         help="Camera device index or path, e.g. 0 or /dev/HD_CAMERA (default: 0)")
-    parser.add_argument("--width", type=int, default=3840, help="Requested frame width (0 = camera default)")
-    parser.add_argument("--height", type=int, default=2160, help="Requested frame height (0 = camera default)")
-    parser.add_argument("--mjpg", action="store_true", help="Request MJPG from the camera")
+    parser.add_argument("--width", type=int, default=640,
+                        help="Requested frame width (0 = camera default). 640x360 matches "
+                             "docker/da3/camera_info_640x360.yaml's calibration; changing it "
+                             "needs a matching recalibration for correct DA3 depth.")
+    parser.add_argument("--height", type=int, default=360, help="Requested frame height (0 = camera default)")
+    parser.add_argument("--mjpg", action="store_true", default=True,
+                        help="Request MJPG from the camera (default: on, matches the drone camera)")
+    parser.add_argument("--no-mjpg", dest="mjpg", action="store_false", help="Disable MJPG")
 
     args = parser.parse_args()
     root_path = Path(args.root)

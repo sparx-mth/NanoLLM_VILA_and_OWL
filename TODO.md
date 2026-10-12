@@ -12,11 +12,16 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
    - Reach boards through the RPi jump host (README 8).
 2. **Repeat the model + camera tests on each board**
    - `v4l2-ctl --list-devices` — capture node name may differ; capture -> pipeline -> display.
-3. **Service that deletes old frames** (disk fills: 1920x1080 frame ~0.5 MB, 1 every 2 s)
-   - Decide the rule: older than N hours, or keep the last N runs; include `<run>_ann` and
-     `<run>_depth` folders; never delete the run `latest` points at. systemd timer.
-4. **Smaller capture images** (e.g. 960x540 or 640x360) — less disk, faster VLM/NanoOWL.
-   Decide whether the full-size originals are needed later.
+3. ~~**Service that deletes old frames**~~ — decided: count-based (keep last N run folders),
+   not age-based, since this board's clock resets at boot (README section 7) and an
+   age-based rule would delete fresh frames the moment the clock looks decades off.
+   `orin_nx/cleanup_frames.sh` + `orin-nx-cleanup.service`/`.timer` (hourly). Still open:
+   only prunes `comm_manager_vllm.py`'s output triplets (`<run>`/`<run>_ann`/`<run>_depth`);
+   the raw `auto_capture_interval.py` capture root needs its own instance of the same script.
+4. ~~**Smaller capture images**~~ — decided: 640x360 (now the `auto_capture_interval.py`
+   default), matching `docker/da3/camera_info_640x360.yaml`'s existing calibration and
+   confirmed available at a full 30fps in MJPG. Still open: whether full-size originals
+   are needed later (not currently kept anywhere if so).
 5. **Inspect depth values and the DA3 size**
    - Compare `DEPTH_ANYTHING` distances to known distances; is 252x448 enough?
    - Lens is a fisheye: calibrate (OpenCV fisheye) and undistort before DA3, then fix `cam.yaml`.
