@@ -179,6 +179,7 @@ annotated `_ann.jpg` back into a new timestamped folder under `--captures-root`.
 
 ```bash
 cd ~/NanoLLM_VILA_and_OWL
+DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
 python3 comm_manager_vllm.py \
   --no-config \
   --host 0.0.0.0 --port 5050 \
@@ -207,6 +208,7 @@ time you want to process a fresh batch of frames.
 
 ```bash
 cd ~/NanoLLM_VILA_and_OWL
+DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
 python3 display_server.py --root /home/iai/captures/R${DRONE_ID} --host 0.0.0.0 --port 8090 --latest-only
 ```
 
@@ -317,6 +319,7 @@ udev symlink by name, so `auto_capture_interval.py` resolves it with `realpath`.
 ```bash
 v4l2-ctl --list-devices        # find the capture node
 cd ~/NanoLLM_VILA_and_OWL
+DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
 python3 auto_capture_interval.py --root /home/iai/captures/R${DRONE_ID} \
   --device /dev/video0 --width 640 --height 360 --interval 2 --batch-size 20
 ```
@@ -396,9 +399,12 @@ commands on every board — it just reflects whatever that board's own `.env` al
 Verified on R2: prompt becomes `[R2] iai@ubuntu:~$` (the MOTD needed the `$HOME` fix above
 after it first showed `R?` — PAM's root context was the culprit).
 
-**`$DRONE_ID` is also the single source of truth for this board's captures path** — every
-`--captures-root`/`--root` below uses `/home/iai/captures/R${DRONE_ID}`, so a board's frames
-always live under its own real drone number rather than a leftover generic `R1` folder name.
+**`ROS_DOMAIN_ID` is also the single source of truth for this board's captures path** — every
+`--captures-root`/`--root` below computes `DRONE_ID` fresh from `.env` right before using it
+(rather than relying on the `$DRONE_ID` this `.bashrc` snippet exports, which only exists in
+an interactive shell that actually sourced it), so a board's frames always live under its own
+real drone number rather than a leftover generic `R1` folder name, regardless of how the
+command gets run.
 
 ---
 
