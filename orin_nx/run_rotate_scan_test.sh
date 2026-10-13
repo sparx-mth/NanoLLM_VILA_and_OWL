@@ -11,6 +11,10 @@ set -u
 DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
 CAPTURES_ROOT="/home/iai/captures/R${DRONE_ID}"
 EXAMPLES_DIR="/home/iai/iai_ws/src/examples/src"
+# rotate_360_example.py runs inside the iai container and writes under its own
+# /home/iai/frames - /home/iai/captures is NOT mounted into that container (confirmed via
+# `docker inspect iai --format '{{range .Mounts}}...'`). This is that mount's HOST-side path.
+FRAMES_HOST_ROOT="${HOME}/iai_ws/frames"
 
 check_answering() {  # check_answering <port> <label>
   local port="$1" label="$2"
@@ -36,14 +40,17 @@ echo "  docker exec -it iai python3 ${EXAMPLES_DIR}/land_and_disarm_example.py"
 echo
 read -rp "Press Enter once you've landed and disarmed, to run the vision pipeline on the captured frames: "
 
-echo "[pipeline] pointing 'latest' at the rotation scan folder"
-latest_scan=$(ls -dt "${CAPTURES_ROOT}"/rotate_scan_*/ 2>/dev/null | head -1)
+echo "[pipeline] copying the rotation scan into ${CAPTURES_ROOT}"
+latest_scan=$(ls -dt "${FRAMES_HOST_ROOT}"/rotate_scan_*/ 2>/dev/null | head -1)
 if [ -z "$latest_scan" ]; then
-  echo "[pipeline] no rotate_scan_* folder found under ${CAPTURES_ROOT} -- aborting" >&2
+  echo "[pipeline] no rotate_scan_* folder found under ${FRAMES_HOST_ROOT} -- aborting" >&2
   exit 1
 fi
-ln -sfn "$latest_scan" "${CAPTURES_ROOT}/latest"
-echo "[pipeline] latest -> ${latest_scan}"
+mkdir -p "${CAPTURES_ROOT}"
+scan_name=$(basename "${latest_scan%/}")
+cp -r "$latest_scan" "${CAPTURES_ROOT}/${scan_name}"
+ln -sfn "${CAPTURES_ROOT}/${scan_name}" "${CAPTURES_ROOT}/latest"
+echo "[pipeline] latest -> ${CAPTURES_ROOT}/${scan_name}"
 
 cd ~/NanoLLM_VILA_and_OWL
 python3 comm_manager_vllm.py \
