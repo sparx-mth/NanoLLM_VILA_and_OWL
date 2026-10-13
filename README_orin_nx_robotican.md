@@ -74,12 +74,15 @@ docker run -d --restart unless-stopped --name vllm_qwen \
   ghcr.io/nvidia-ai-iot/vllm:latest-jetson-orin \
   vllm serve Qwen/Qwen2-VL-2B-Instruct \
     --port 8080 \
-    --gpu-memory-utilization 0.55 \
+    --gpu-memory-utilization 0.52 \
     --max-model-len 2048 \
     --max-num-seqs 4 \
     --limit-mm-per-prompt '{"image":1,"video":0}' \
     --trust-remote-code
 ```
+(`0.52` is R2/R3's value for vLLM running alone. On R1, use `0.63` for vLLM alone — see
+the note below on why it must be tested with NanoOWL/DA3 stopped, and TODO item 1 for the
+still-open full-stack question.)
 
 These values are tuned so vLLM, NanoOWL and DA3 all fit in the 15.6 GB together. At
 `0.62` / 4096 it failed with `ValueError: ... KV cache is needed, which is larger than the
@@ -87,6 +90,15 @@ available KV cache memory` once DA3 was loaded (vLLM profiles a video input by d
 reserving memory the pipeline never uses; `video:0` removes that). Start vLLM **first**,
 then NanoOWL, then DA3 — after a reboot Docker restarts containers in no fixed order, so
 check this on the first boot.
+
+**`vllm_qwen` must be restarted with NanoOWL/DA3 stopped for its memory snapshot to be
+meaningful** — restarting it while they're already loaded and holding memory produces a false
+"it needs more" result (confirmed: R2 failed to even start at a value that normally works,
+simply because NanoOWL/DA3/`iai` were already running when vLLM was restarted). This explained
+away a lot of apparent flakiness in R2/R3 retests, but **does not fully explain R1** — R1's own
+isolated (nothing else running) tests still reproducibly need `0.63`, not `0.52`, on two
+separate clean reboots, while R2 isolated the same way got by on `0.52` with only a thin
+`+0.24 GiB` margin. See TODO item 1 for the full comparison and what's still open.
 
 Watch it come up:
 ```bash
@@ -308,14 +320,11 @@ for p in 8080 5060 5070; do printf "$p: "; curl -s -o /dev/null -w "%{http_code}
 **`iai` (the separate ROS2 flight-controller/camera bridge, its own pre-existing
 `iai.service`) is not managed by this script and must not be touched, stopped, or
 reordered.** Seen once on R2: reconnecting the RPi let `iai` start right as vLLM was
-already up, and free memory dropped to 7.99/15.29 GiB — just under vLLM's `0.55`
-utilization requirement of ~8.41 GiB — crashing it. The fix is giving vLLM enough margin to
-tolerate `iai` running alongside, not controlling when `iai` starts:
-```bash
---gpu-memory-utilization 0.48   # down from 0.55, leaves ~7.3 GiB instead of ~6.9 GiB free
-```
-This hasn't been re-verified with all four running together yet — if it still crashes,
-lower it further rather than touching `iai`.
+already up, and free memory dropped to 7.99/15.29 GiB — just under vLLM's utilization
+requirement at the time — crashing it. The fix is giving vLLM enough margin to tolerate
+`iai` running alongside, not controlling when `iai` starts — this is already folded into
+the per-board values in section 1 (`0.52` on R2/R3, `0.63` on R1); if it still crashes with
+`iai` running, lower it further rather than touching `iai`.
 
 ---
 

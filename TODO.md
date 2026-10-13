@@ -18,8 +18,65 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
      are already correct per board) or camera calibration if R1/R3 use a different physical
      camera unit than R2's.
    - Reach boards through the RPi jump host (README 8).
-2. **Repeat the model + camera tests on each board**
-   - `v4l2-ctl --list-devices` — capture node name may differ; capture -> pipeline -> display.
+   - **R1 vLLM `--gpu-memory-utilization`: `0.63` for vLLM running alone** (not `0.52`) —
+     confirmed on two independent clean reboots (522-533 MiB idle, `nvmap` page-pool at `0`,
+     confirmed via `tegrastats`/the pagepool file *before* starting anything, `0.52` as the
+     first and only thing to touch the GPU that boot): `0.52` failed both times with an almost
+     identical deficit (`Available KV cache memory: -1.58` and `-1.6 GiB`), while `0.63`
+     succeeded with `+1.93 GiB`.
+     - **Important methodology finding, found while sanity-checking this against R2/R3:**
+       `vllm_qwen` must be restarted with NanoOWL/DA3 **stopped** for its memory snapshot to
+       be meaningful — restarting it while they're already loaded produces a false "needs
+       more" result. R2 failed to even start at `0.63` (pre-flight check: only `7.92/15.29
+       GiB` free) simply because `da3`/`now_eng`/`iai` were already running when `vllm_qwen`
+       was restarted during this investigation. This explains a lot of apparent flakiness in
+       earlier R2/R3 retests of `0.52` (mixed successes around `+0.2-0.4 GiB` and failures
+       around `-1.6 GiB` — inconsistent restart conditions, not a stable number).
+     - **This does not fully explain R1**, though: stopping NanoOWL/DA3 on R2 and retesting
+       `0.52` isolated gave a solidly positive but thin result (`+0.24 GiB`) — consistent with
+       R1 still needing more even under an equally isolated, apples-to-apples test. So R1
+       genuinely appears to need more margin than R2, even once the confound above is
+       controlled for. Root cause still not found despite ruling out (all identical to
+       R2/R3): L4T version (`R36.4.4`), CMA size (256 MiB), GUI session, stray processes, GPU
+       SM count/global memory (`trtexec`: `SMs: 8` / `15655 MiB` — not silicon binning), and
+       kernel reserved-memory carveout (`sudo dmesg | grep -iE "reserved|carveout|memblock"`:
+       R1 `514112K` reserved / `16521856K` total vs R2 `513664K` / R3 `513640K` — noise).
+       Going further would mean instrumenting CUDA's own memory accounting directly (e.g. a
+       raw `cudaMemGetInfo()` probe outside vLLM/Docker) — not worth it unless this resurfaces.
+     - **Before trusting either number as final: get more isolated data points.** We only have
+       *one* isolated R2 test (`+0.24 GiB`, thin) vs *two* isolated R1 tests (both clearly
+       negative) — not enough of either to fully rule out run-to-run noise. Worth repeating
+       the isolated (NanoOWL/DA3 stopped, clean reboot) test on R2/R3 a couple more times
+       before concluding `0.52` is reliably safe there.
+   - ~~**Full stack on R1**~~ — done: NanoOWL and DA3 (`336x602`, engine already built from an
+     earlier session) brought up alongside vLLM (already running at `0.63`), following the
+     documented order (vLLM already up, then NanoOWL, then DA3). All three answered `404`
+     (healthy) afterward, and `tegrastats` settled at a stable `12353/15655 MB` (~3.2 GiB
+     free headroom, not climbing) — `0.63` holds for the full stack on R1, not just vLLM
+     alone. NanoOWL's baked-in CLIP/image-encoder TensorRT engine was built on a different
+     board (image exported from R2) and warned `Using an engine plan file across different
+     models of devices is not recommended` on startup — it ran fine regardless, but if
+     NanoOWL detection quality/stability looks off on R1 later, rebuild that engine on R1
+     specifically (same rule as DA3's engines).
+   - ~~**R1 camera + end-to-end pipeline test**~~ — done. `v4l2-ctl --list-devices`: same
+     layout as R2/R3 (`/dev/video0` capture, `/dev/video1` metadata). `captures/` needed
+     `sudo chmod -R 777` once (root-owned from an earlier bind mount) before `iai` could
+     write to it. `auto_capture_interval.py` at 640x360 confirmed streaming. Full pipeline
+     (`comm_manager_vllm.py` -> NanoOWL -> `display_server.py`, viewed through an RPi SSH
+     port-forward since R1 is only reachable via the jump host with the camera attached)
+     confirmed working.
+   - ~~**R1 startup service + cleanup timer**~~ — done. Both unit files are already generic
+     (derive the captures path from `ROS_DOMAIN_ID`, no per-board edits needed), so install
+     was identical to R2/R3. Verified with a real `sudo reboot`:
+     `orin-nx-services` brought up vLLM -> NanoOWL -> DA3 in order automatically
+     (`journalctl`: vLLM ~6 min, NanoOWL + DA3 ~1.5 min more, ~7.5 min total — matches R2's
+     documented cold-boot timing), all three answering `404` afterward.
+   - **R1 is now at full production parity with R2/R3**: full stack running, confirmed at
+     `0.63`, camera + end-to-end pipeline verified, auto-boot verified. Still not done:
+     DA3's `--depth-endpoint` wasn't included in the `comm_manager_vllm.py` test — depth
+     hasn't been exercised end-to-end on R1 yet (same as the still-open item for R2/R3 in
+     README section 5).
+2. ~~**Repeat the model + camera tests on each board**~~ — R2/R3 done earlier; R1 done above.
 3. ~~**Service that deletes old frames**~~ — decided: count-based (keep last N run folders),
    not age-based, since this board's clock resets at boot (README section 7) and an
    age-based rule would delete fresh frames the moment the clock looks decades off.
@@ -38,9 +95,13 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
      (~3.85fps), tight 254.5-263.5ms spread (no slow-tail spikes), only ~35ms overhead above
      the raw engine number. Not the pipeline's bottleneck either way - vLLM's own per-frame
      captioning (0.6-1.8s) is slower than DA3 at any of these sizes.
-   - ~~Standardize resolution across boards~~ — decided: **`336x602` for all boards**
-     (R1/R3 included), based on the benchmark above. R3 still runs the old `252x448` and
-     needs updating; R1 should be set up with `336x602` directly rather than `252x448` first.
+   - ~~Standardize resolution across boards~~ — decided and confirmed done: **`336x602` on
+     all three boards.** This note previously said R3 still ran the old `252x448` and needed
+     updating — stale; checking R3's actual running container config
+     (`docker inspect da3 --format '{{range .Config.Cmd}}{{.}} {{end}}'`) showed it was
+     already on `DA3METRIC-LARGE.336x602.fp16.engine`. The old `L-252x448` folder (ONNX only,
+     no engine) is leftover and unused on both R1 and R3 — safe to delete whenever (TODO
+     item 7 territory).
    - Compare `DEPTH_ANYTHING` distances to known distances - is either size accurate enough?
      Saw some negative depth minimums in R2's debug log (e.g. `depth min=-0.632213`) -
      plausibly explained by the fisheye issue below rather than plain model noise: `cam.yaml`
