@@ -11,9 +11,8 @@ set -u
 DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
 CAPTURES_ROOT="/home/iai/captures/R${DRONE_ID}"
 EXAMPLES_DIR="/home/iai/iai_ws/src/examples/src"
-# rotate_360_example.py runs inside the iai container and writes under its own
-# /home/iai/frames - /home/iai/captures is NOT mounted into that container (confirmed via
-# `docker inspect iai --format '{{range .Mounts}}...'`). This is that mount's HOST-side path.
+# Host-side path of the iai container's /home/iai/frames mount (where rotate_360_example.py
+# actually writes - /home/iai/captures isn't mounted into that container).
 FRAMES_HOST_ROOT="${HOME}/iai_ws/frames"
 
 check_answering() {  # check_answering <port> <label>
