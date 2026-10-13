@@ -129,3 +129,12 @@ Exports of the 3 images + model data (~32 GB, SHA256SUMS) are on the dev laptop 
      vision pipeline; confirm whether still used by another workflow before touching.
    - `comm_timings.log` — a log file, tracked in git; should be gitignored instead.
    - `demo_with_main*.drawio.png` — old diagrams, confirm still referenced anywhere first.
+8. **Drone flight capture (TheAgency repo)** — `rotate_360_example.py` (arm/takeoff/360-turn,
+   captures frames throughout) and `run_rotate_scan_test.sh` (pre-flight container check,
+   post-flight `comm_manager_vllm.py` + display on the captured scan) have been flight-tested
+   twice on R3. Full writeup and open items (yaw command not confirmed to actually rotate the
+   vehicle, a real DDS/network dropout seen mid-flight, settle-time and pitch-down added but
+   unvalidated) are in `TheAgency/sparx_agency/robots/ROBOTICAN/examples/TODO.md` — not
+   duplicated here since the code lives there, but the depth-endpoint integration in
+   `run_rotate_scan_test.sh` (item 5 above, still never exercised end to end on any board) is
+   exactly what that flow is meant to finally exercise once the flight side is reliable.
