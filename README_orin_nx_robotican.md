@@ -234,7 +234,7 @@ the drone).
 `depth_anything_http_server` (from the `daphnaa/ros2-depth-anything-v3-trt` fork, pinned
 at `52131cc`) running in a container built from `docker/da3/`. Endpoint:
 `POST http://127.0.0.1:5070/bbox_depth` — the same API `comm_manager_vllm.py` calls via
-`--depth-endpoint`. Model: `DA3METRIC-LARGE` at 252x448 (fp16, ~90 ms/inference, ~0.7 GB GPU).
+`--depth-endpoint`. Model: `DA3METRIC-LARGE` at 336x602 (fp16, ~260 ms/inference on the Orin NX; see TODO item 5).
 
 **TensorRT engines are device-specific** — never copy an `.engine` from the AGX; copy the
 `.onnx` + `.onnx.data` and build the engine on this board. The ONNX looks for its weights
@@ -256,20 +256,20 @@ git -C ~/NanoLLM_VILA_and_OWL/docker/da3/src/ros2-depth-anything-v3-trt checkout
 cd ~/NanoLLM_VILA_and_OWL/docker/da3 && docker build -t da3:orin .
 
 # 2. model folder: ONNX + data (data file renamed!) + camera YAML
-mkdir -p ~/da3_models/L-252x448
-#   DA3METRIC-LARGE.252x448.onnx       -> ~/da3_models/L-252x448/
-#   DA3METRIC-LARGE.252x448.onnx.data  -> ~/da3_models/L-252x448/DA3METRIC-LARGE.onnx.data
-cp ~/NanoLLM_VILA_and_OWL/docker/da3/camera_info_640x360.yaml ~/da3_models/L-252x448/cam.yaml
+mkdir -p ~/da3_models/DA3METRIC-LARGE.336x602
+#   DA3METRIC-LARGE.336x602.onnx       -> ~/da3_models/DA3METRIC-LARGE.336x602/
+#   DA3METRIC-LARGE.336x602.onnx.data  -> ~/da3_models/DA3METRIC-LARGE.336x602/DA3METRIC-LARGE.onnx.data
+cp ~/NanoLLM_VILA_and_OWL/docker/da3/camera_info_640x360.yaml ~/da3_models/DA3METRIC-LARGE.336x602/cam.yaml
 
 # 3. build the engine on this board
-M=~/da3_models/L-252x448; NAME=DA3METRIC-LARGE.252x448
+M=~/da3_models/DA3METRIC-LARGE.336x602; NAME=DA3METRIC-LARGE.336x602
 docker run --rm --runtime nvidia -v $M:/models da3:orin \
   /usr/src/tensorrt/bin/trtexec --onnx=/models/$NAME.onnx \
   --saveEngine=/models/$NAME.fp16.engine --fp16
 
 # 4. run
 docker run -d --restart unless-stopped --name da3 --runtime nvidia --network host \
-  -v ~/da3_models/L-252x448:/models -v /home/iai/captures:/home/iai/captures \
+  -v ~/da3_models/DA3METRIC-LARGE.336x602:/models -v /home/iai/captures:/home/iai/captures \
   -v /home/iai/iai_ws/frames:/home/iai/iai_ws/frames \
   da3:orin ros2 run depth_anything_v3 depth_anything_http_server \
   --model /models/$NAME.fp16.engine --camera-yaml /models/cam.yaml \
