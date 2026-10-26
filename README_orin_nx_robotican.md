@@ -270,6 +270,7 @@ docker run --rm --runtime nvidia -v $M:/models da3:orin \
 # 4. run
 docker run -d --restart unless-stopped --name da3 --runtime nvidia --network host \
   -v ~/da3_models/L-252x448:/models -v /home/iai/captures:/home/iai/captures \
+  -v /home/iai/iai_ws/frames:/home/iai/iai_ws/frames \
   da3:orin ros2 run depth_anything_v3 depth_anything_http_server \
   --model /models/$NAME.fp16.engine --camera-yaml /models/cam.yaml \
   --max-depth 7.0 --host 0.0.0.0 --port 5070 --save-depth --tiling 0
@@ -277,7 +278,8 @@ docker run -d --restart unless-stopped --name da3 --runtime nvidia --network hos
 
 The server writes the depth colormap to `<image_dir>_depth/<name>_depth.jpg`, with
 `image_dir` taken from the request and resolved **inside the container** — hence the
-`/home/iai/captures` mount at the identical path (files are written as root). Without it the
+`/home/iai/captures` and `/home/iai/iai_ws/frames` mounts at the identical paths (files are written as root;
+`frames` is where `orin_nx/run_rotate_scan_test.sh` runs the pipeline). Without it the
 output stays in the container's own filesystem. Check with
 `docker logs da3 | grep -E "SAVE|NOT SAVED"`.
 
