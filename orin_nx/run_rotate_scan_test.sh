@@ -6,6 +6,8 @@
 # vision pipeline on the captured frames afterward, once you confirm you've landed.
 #
 # Run from the host (not inside any container).
+# Usage: run_rotate_scan_test.sh [existing_scan_dir]
+#   With a folder given, skips the flight prompt and processes that scan.
 set -u
 
 DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
@@ -32,19 +34,35 @@ check_answering 5060 "NanoOWL"
 check_answering 5070 "DA3"
 echo "[check] all three answering -- safe to fly"
 
-echo
-echo "Now run the flight yourself, in your own terminal:"
-echo "  docker exec -it iai python3 ${EXAMPLES_DIR}/rotate_360_example.py"
-echo "  (it starts capturing frames on its own once Position mode is confirmed)"
-echo "  docker exec -it iai python3 ${EXAMPLES_DIR}/land_and_disarm_example.py"
-echo
-read -rp "Press Enter once you've landed and disarmed, to run the vision pipeline on the captured frames: "
+# This board's clock resets (a fresh scan can be stamped 1970), so "newest by mtime/name" can
+# pick an old scan. Remember what exists now and process whichever folder appears after.
+mkdir -p "${FRAMES_HOST_ROOT}"
+scans_before=$(ls -d "${FRAMES_HOST_ROOT}"/rotate_scan_*/ 2>/dev/null | sort)
+
+EXISTING_SCAN="${1:-}"
+if [ -z "$EXISTING_SCAN" ]; then
+  echo
+  echo "Now run the flight yourself, in your own terminal:"
+  echo "  docker exec -it iai python3 ${EXAMPLES_DIR}/rotate_360_example.py"
+  echo "  (it starts capturing frames on its own once Position mode is confirmed)"
+  echo "  docker exec -it iai python3 ${EXAMPLES_DIR}/land_and_disarm_example.py"
+  echo
+  read -rp "Press Enter once you've landed and disarmed, to run the vision pipeline on the captured frames: "
+fi
 
 echo "[pipeline] copying the rotation scan into ${CAPTURES_ROOT}"
-latest_scan=$(ls -dt "${FRAMES_HOST_ROOT}"/rotate_scan_*/ 2>/dev/null | head -1)
-if [ -z "$latest_scan" ]; then
-  echo "[pipeline] no rotate_scan_* folder found under ${FRAMES_HOST_ROOT} -- aborting" >&2
-  exit 1
+if [ -n "$EXISTING_SCAN" ]; then
+  latest_scan="${EXISTING_SCAN%/}/"
+  [ -d "$latest_scan" ] || { echo "[pipeline] $EXISTING_SCAN is not a folder -- aborting" >&2; exit 1; }
+else
+  scans_after=$(ls -d "${FRAMES_HOST_ROOT}"/rotate_scan_*/ 2>/dev/null | sort)
+  new_scans=$(comm -13 <(echo "$scans_before") <(echo "$scans_after"))
+  latest_scan=$(echo "$new_scans" | grep . | xargs -r ls -dt | head -1)
+  if [ -z "$latest_scan" ]; then
+    echo "[pipeline] no NEW rotate_scan_* folder appeared under ${FRAMES_HOST_ROOT} -- aborting" >&2
+    exit 1
+  fi
+  echo "[pipeline] using new scan ${latest_scan} ($(ls "$latest_scan"/*.jpg 2>/dev/null | wc -l) frames)"
 fi
 mkdir -p "${CAPTURES_ROOT}"
 scan_name=$(basename "${latest_scan%/}")
