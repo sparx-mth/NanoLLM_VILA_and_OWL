@@ -59,10 +59,27 @@ else
   new_scans=$(comm -13 <(echo "$scans_before") <(echo "$scans_after"))
   latest_scan=$(echo "$new_scans" | grep . | xargs -r ls -dt | head -1)
   if [ -z "$latest_scan" ]; then
-    echo "[pipeline] no NEW rotate_scan_* folder appeared under ${FRAMES_HOST_ROOT} -- aborting" >&2
-    exit 1
+    # Flew before starting this script (or the clock reset): offer the existing scans,
+    # newest-by-mtime first. mtime is only reliable within one boot, so ask, don't guess.
+    mapfile -t recent < <(ls -dt "${FRAMES_HOST_ROOT}"/rotate_scan_*/ 2>/dev/null | head -5)
+    if [ "${#recent[@]}" -eq 0 ]; then
+      echo "[pipeline] no rotate_scan_* folder under ${FRAMES_HOST_ROOT} -- aborting" >&2
+      exit 1
+    fi
+    echo "[pipeline] no NEW scan appeared; most recent existing scans:"
+    for i in "${!recent[@]}"; do
+      echo "  $((i+1))) ${recent[$i]}  ($(ls "${recent[$i]}"/*.jpg 2>/dev/null | wc -l) frames, $(date -r "${recent[$i]%/}" '+%F %T'))"
+    done
+    read -rp "Pick 1-${#recent[@]} [1], or q to abort: " pick
+    pick="${pick:-1}"
+    case "$pick" in q|Q) exit 1 ;; esac
+    if ! [[ "$pick" =~ ^[0-9]+$ ]] || [ "$pick" -lt 1 ] || [ "$pick" -gt "${#recent[@]}" ]; then
+      echo "[pipeline] invalid choice -- aborting" >&2
+      exit 1
+    fi
+    latest_scan="${recent[$((pick-1))]}"
   fi
-  echo "[pipeline] using new scan ${latest_scan} ($(ls "$latest_scan"/*.jpg 2>/dev/null | wc -l) frames)"
+  echo "[pipeline] using scan ${latest_scan} ($(ls "$latest_scan"/*.jpg 2>/dev/null | wc -l) frames)"
 fi
 mkdir -p "${CAPTURES_ROOT}"
 scan_name=$(basename "${latest_scan%/}")
