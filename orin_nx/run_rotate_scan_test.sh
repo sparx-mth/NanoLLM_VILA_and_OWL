@@ -9,11 +9,12 @@
 set -u
 
 DRONE_ID=$(grep '^ROS_DOMAIN_ID=' ~/iai_ws/src/docker/.env | cut -d= -f2)
-CAPTURES_ROOT="/home/iai/captures/R${DRONE_ID}"
 EXAMPLES_DIR="/home/iai/iai_ws/src/examples/src"
 # Host-side path of the iai container's /home/iai/frames mount (where rotate_360_example.py
-# actually writes - /home/iai/captures isn't mounted into that container).
+# actually writes - /home/iai/captures isn't mounted into that container). The pipeline
+# and display server work in the per-drone R<id> subfolder next to the raw scans.
 FRAMES_HOST_ROOT="${HOME}/iai_ws/frames"
+CAPTURES_ROOT="${FRAMES_HOST_ROOT}/R${DRONE_ID}"
 
 check_answering() {  # check_answering <port> <label>
   local port="$1" label="$2"
