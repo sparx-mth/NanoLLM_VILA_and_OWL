@@ -52,6 +52,7 @@ ln -sfn "${CAPTURES_ROOT}/${scan_name}" "${CAPTURES_ROOT}/latest"
 echo "[pipeline] latest -> ${CAPTURES_ROOT}/${scan_name}"
 
 cd ~/NanoLLM_VILA_and_OWL
+echo "[pipeline] starting comm_manager_vllm.py in the background (it never exits on its own)"
 python3 comm_manager_vllm.py \
   --no-config \
   --host 0.0.0.0 --port 5050 \
@@ -64,7 +65,9 @@ python3 comm_manager_vllm.py \
   --depth-endpoint http://127.0.0.1:5070/bbox_depth \
   --forward-json-url "" \
   --vlm-timeout 60 --retries 3 --retry-sleep 2 \
-  --sleep-between 2 --force
+  --sleep-between 2 --force &
+COMM_PID=$!
+trap 'kill "$COMM_PID" 2>/dev/null' EXIT
 
-echo "[pipeline] starting display server on :8090"
+echo "[pipeline] starting display server on :8090 (frames will appear as comm_manager finishes them)"
 python3 display_server.py --root "${CAPTURES_ROOT}" --host 0.0.0.0 --port 8090 --latest-only
